@@ -16,11 +16,13 @@ const WC_SOURCES = ['小世界赛冠军', '世界积分直邀', '地区积分第
 const REGION_COLORS = { HO: '#a83232', CH: '#e07b3e', LV: '#2e7d4f', OP: '#1e3a5f', GP: '#d85c8e' };
 const CATEGORY_COLORS = { hupl: '#c9a227', secondary: '#e6d58a' };
 const QUICK_IMPORT = [
-  { region: 'HO', teams: ['GLA','SPR','HOE','MRS','LALG','NO1','SOL','LAKS','MX'] },
-  { region: 'CH', teams: ['ORA','CES','YS','HLS','CDK','FOX','CHG'] },
-  { region: 'LV', teams: ['GL','GLO','1NV','LK','ENT','TZ','LF'] },
-  { region: 'OP', teams: ['RIV','BS','ISL','PUR','sharks','cloud','GRA','UNG','XY'] },
-  { region: 'GP', teams: ['PKY','SUF','WDG','KBG','SKR','MGO','BTW','KG','GOD','XLN'] }
+  { category: 'external', region: 'HO', teams: ['GLA','SPR','HOE','MRS','LALG','NO1','SOL','LAKS','MX'] },
+  { category: 'hupl', teams: ['DRE','FLC','FOR','BOTV','DGE','NF','DOUZ','RBG','DIP','GLX'] },
+  { category: 'secondary', teams: ['FOH','exDOUZ','RS','DF','exDREY','FLASH','PSG','VLK','HBDJ','YHZJ'] },
+  { category: 'external', region: 'CH', teams: ['ORA','CES','YS','HLS','CDK','FOX','CHG'] },
+  { category: 'external', region: 'LV', teams: ['GL','GLO','1NV','LK','ENT','TZ','LF'] },
+  { category: 'external', region: 'OP', teams: ['RIV','BS','ISL','PUR','sharks','cloud','GRA','UNG','XY'] },
+  { category: 'external', region: 'GP', teams: ['PKY','SUF','WDG','KBG','SKR','MGO','BTW','KG','GOD','XLN'] }
 ];
 function autoColor(category, region){
   if(category === 'hupl') return CATEGORY_COLORS.hupl;
@@ -289,7 +291,7 @@ function saveClub(){
     Object.assign(getClub(editingClubId), data);
     toast('已更新俱乐部');
   } else {
-    state.clubs.push(Object.assign({ id: uid('c'), createdAt: Date.now() }, data));
+    state.clubs.push(Object.assign({ id: uid('c'), createdAt: Date.now(), relatedIds: [] }, data));
     toast('已创建俱乐部');
   }
   saveState(); closeModal('modal-club');
@@ -299,6 +301,7 @@ function deleteClub(id){
   const c = getClub(id); if(!c) return;
   confirmDialog('删除俱乐部', '确定删除「' + c.name + '」吗？\n相关比赛中的对阵与名次将保留原名称显示为「已删除队伍」。', () => {
     state.clubs = state.clubs.filter(x => x.id !== id);
+    state.clubs.forEach(x => { if(x.relatedIds) x.relatedIds = x.relatedIds.filter(r => r !== id); });
     if(currentClubId === id) currentClubId = null;
     saveState();
     toast('已删除');
@@ -311,7 +314,10 @@ function quickImportTeams(){
   let added = 0, skipped = 0;
   QUICK_IMPORT.forEach(L => L.teams.forEach(abbr => {
     if(existing.has(abbr.toLowerCase())){ skipped++; return; }
-    state.clubs.push({ id: uid('c'), createdAt: Date.now(), name: abbr, shortName: abbr, category: 'external', seat: null, region: L.region, color: autoColor('external', L.region), note: '' });
+    const cat = L.category || 'external';
+    const region = cat === 'external' ? (L.region || null) : null;
+    const seat = cat === 'hupl' ? 'fixed' : null;
+    state.clubs.push({ id: uid('c'), createdAt: Date.now(), name: abbr, shortName: abbr, category: cat, seat: seat, region: region, color: autoColor(cat, region), note: '', relatedIds: [] });
     existing.add(abbr.toLowerCase()); added++;
   }));
   saveState(); renderClubs();
@@ -1604,11 +1610,48 @@ function renderTeam(){
   meta += '</tbody></table></div>';
   $('team-meta').innerHTML = meta;
 
+  renderTeamRelated(c);
   renderTeamSeasonFilter(c);
   renderTeamHistory(c);
   renderTeamH2h(c);
 }
 
+function relatedIdsOf(c){
+  const seen = new Set([c.id]);
+  const stack = [c.id];
+  while(stack.length){
+    const id = stack.pop();
+    const cur = getClub(id);
+    if(!cur) continue;
+    (cur.relatedIds || []).forEach(r => { if(!seen.has(r)){ seen.add(r); stack.push(r); } });
+  }
+  return Array.from(seen);
+}
+function renderTeamRelated(c){
+  const el = $('team-related');
+  if(!el) return;
+  const rel = (c.relatedIds || []).map(getClub).filter(Boolean);
+  let html = '';
+  if(rel.length === 0){
+    html += '<div class="muted" style="margin-bottom:8px">暂无关联。适用于「次级转席位」「队伍改名」等同一沿革——关联后，下面的历届成绩与对阵成绩会把关联队伍的历史一并统计。</div>';
+  } else {
+    html += '<div class="team-pick" style="max-height:none">' + rel.map(r =>
+      '<span class="team-chip">' +
+      '<span class="dot" style="background:' + clubColor(r.id) + '"></span>' + esc(r.name) +
+      ' <span class="muted">' + esc(CATEGORY_LABELS[r.category] || '') + '</span>' +
+      ' <span class="muted" style="cursor:pointer" onclick="unlinkTeam(\'' + r.id + '\')" title="解除关联">×</span></span>'
+    ).join('') + '</div>';
+  }
+  html += '<button class="btn btn-sm" style="margin-top:8px" onclick="openLinkTeamPicker()">+ 关联队伍</button>';
+  el.innerHTML = html;
+}
+function openLinkTeamPicker(){ openTeamPicker('link:' + currentClubId); }
+function unlinkTeam(id){
+  const c = getClub(currentClubId); if(!c) return;
+  c.relatedIds = (c.relatedIds || []).filter(x => x !== id);
+  const o = getClub(id); if(o && o.relatedIds) o.relatedIds = o.relatedIds.filter(x => x !== c.id);
+  saveState(); renderTeam();
+}
 let teamSeasonFilter = '';
 function renderTeamSeasonFilter(c){
   const el = $('team-season-filter');
@@ -1627,24 +1670,28 @@ function onTeamSeasonChange(v){
   renderTeamH2h(c);
 }
 function renderTeamHistory(c){
+  const group = relatedIdsOf(c);
+  const hasRel = group.length > 1;
   const hist = [];
   state.tournaments.forEach(t => {
-    if(!(t.teamIds || []).includes(c.id)) return;
+    const members = (t.teamIds || []).filter(id => group.includes(id));
+    if(members.length === 0) return;
     if(teamSeasonFilter && t.seasonId !== teamSeasonFilter) return;
-    const rankRow = (t.finalStandings || []).find(r => r.clubId === c.id);
-    hist.push({ t: t, rank: rankRow ? rankRow.rank : null });
+    const rankRow = (t.finalStandings || []).find(r => group.includes(r.clubId));
+    hist.push({ t: t, members: members, rank: rankRow ? rankRow.rank : null });
   });
   hist.sort((a,b) => (b.t.createdAt || 0) - (a.t.createdAt || 0));
   const hEl = $('team-history');
   if(hist.length === 0){
     hEl.innerHTML = '<div class="empty">该赛年暂无参赛记录。</div>';
   } else {
-    let html = '<div class="table-wrap"><table><thead><tr><th>赛事</th><th>分类</th><th>赛年</th><th>日期</th><th>最终名次</th></tr></thead><tbody>';
+    let html = '<div class="table-wrap"><table><thead><tr><th>赛事</th><th>分类</th><th>赛年</th><th>日期</th>' + (hasRel ? '<th>队名</th>' : '') + '<th>最终名次</th></tr></thead><tbody>';
     hist.forEach(h => {
       html += '<tr><td><a class="clickable" onclick="openTournament(\'' + h.t.id + '\')">' + esc(h.t.name) + '</a></td>' +
         '<td>' + typeBadge(h.t.type) + ' ' + esc(subtypeLabel(h.t.subtype)) + '</td>' +
         '<td>' + (h.t.seasonId ? esc((getSeason(h.t.seasonId)||{}).name || '') : '—') + '</td>' +
         '<td>' + esc(h.t.date || '—') + '</td>' +
+        (hasRel ? '<td>' + h.members.map(m => teamSwatch(m, true)).join('、') + '</td>' : '') +
         '<td>' + (h.rank ? rankHtml(h.rank) : '—') + '</td></tr>';
     });
     html += '</tbody></table></div>';
@@ -1652,17 +1699,20 @@ function renderTeamHistory(c){
   }
 }
 function renderTeamH2h(c){
+  const gset = new Set(relatedIdsOf(c));
   const h2h = {};
   state.tournaments.forEach(t => {
     if(teamSeasonFilter && t.seasonId !== teamSeasonFilter) return;
     (t.stages || []).forEach(s => (s.matches || []).forEach(m => {
-      let opp = null;
-      if(m.teamAId === c.id && m.teamBId) opp = m.teamBId;
-      else if(m.teamBId === c.id && m.teamAId) opp = m.teamAId;
+      const aIn = gset.has(m.teamAId), bIn = gset.has(m.teamBId);
+      if(!aIn && !bIn) return;
+      if(aIn && bIn) return; // 关联队伍内部对局（同一沿革），不计入
+      const me = aIn ? m.teamAId : m.teamBId;
+      const opp = aIn ? m.teamBId : m.teamAId;
       if(!opp) return;
       if(!h2h[opp]) h2h[opp] = { w: 0, l: 0 };
       const w = matchWinner(m);
-      if(w === c.id) h2h[opp].w++;
+      if(w === me) h2h[opp].w++;
       else if(w && w !== 'draw') h2h[opp].l++;
     }));
   });
@@ -1732,8 +1782,11 @@ function openTeamPicker(target){
   } else if(target.startsWith('tournament-points:')){
     const p = getTournament(target.split(':')[1]).points;
     (p.clubIds || []).forEach(id => teamPicker.selected.add(id));
+  } else if(target.startsWith('link:')){
+    const c = getClub(target.split(':')[1]);
+    (c.relatedIds || []).forEach(id => teamPicker.selected.add(id));
   }
-  $('team-picker-title').textContent = target === 'tournament' ? '选择参赛队伍' : '选择积分表队伍';
+  $('team-picker-title').textContent = target === 'tournament' ? '选择参赛队伍' : (target.startsWith('link:') ? '选择要关联的队伍' : '选择积分表队伍');
   renderTeamPickerList();
   openModal('modal-team-picker');
 }
@@ -1751,6 +1804,7 @@ function confirmTeamPicker(){
   if(!teamPicker) return;
   const ids = Array.from(teamPicker.selected);
   const target = teamPicker.target;
+  let msg = '已更新队伍';
   if(target === 'tournament'){
     const t = getTournament(currentTournamentId);
     t.teamIds = ids;
@@ -1758,9 +1812,17 @@ function confirmTeamPicker(){
     getSeason(target.split(':')[1]).points.clubIds = ids;
   } else if(target.startsWith('tournament-points:')){
     getTournament(target.split(':')[1]).points.clubIds = ids;
+  } else if(target.startsWith('link:')){
+    const c = getClub(target.split(':')[1]);
+    const next = ids.filter(id => id !== c.id && getClub(id));
+    const prev = c.relatedIds || [];
+    c.relatedIds = next;
+    next.forEach(id => { const o = getClub(id); o.relatedIds = o.relatedIds || []; if(!o.relatedIds.includes(c.id)) o.relatedIds.push(c.id); });
+    prev.forEach(id => { if(!next.includes(id)){ const o = getClub(id); if(o && o.relatedIds) o.relatedIds = o.relatedIds.filter(x => x !== c.id); } });
+    msg = '已更新关联队伍';
   }
   saveState(); closeModal('modal-team-picker');
-  render(); toast('已更新队伍');
+  render(); toast(msg);
 }
 
 /* ============================================================
