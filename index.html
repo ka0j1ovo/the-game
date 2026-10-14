@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Game · 黄狗国赛事数据中心</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand" onclick="go('dashboard')" title="返回首页">
+    <span class="brand-logo">TG</span>
+    <span class="brand-text">
+      <b>The Game</b>
+      <small>黄狗国赛事数据中心</small>
+    </span>
+  </div>
+
+  <nav class="nav" id="nav">
+    <a href="javascript:void(0)" data-view="dashboard" class="nav-link active">首页</a>
+    <a href="javascript:void(0)" data-view="clubs" class="nav-link">俱乐部</a>
+    <a href="javascript:void(0)" data-view="seasons" class="nav-link">赛年</a>
+    <a href="javascript:void(0)" data-view="tournaments" class="nav-link">赛事</a>
+  </nav>
+
+  <div class="topbar-right">
+    <div class="searchbox">
+      <input id="search-input" type="text" placeholder="搜索比赛 / 队伍…" autocomplete="off">
+    </div>
+    <div class="data-actions">
+      <button class="btn btn-ghost" onclick="exportData()" title="导出全部数据为 JSON">导出</button>
+      <button class="btn btn-ghost" onclick="triggerImport()" title="从 JSON 导入（覆盖）">导入</button>
+      <button class="btn btn-ghost btn-danger-text" onclick="confirmClear()" title="清空全部本地数据">清空</button>
+    </div>
+  </div>
+</header>
+
+<div id="breadcrumb" class="breadcrumb"></div>
+
+<main id="app" class="container">
+
+  <!-- ============ 首页 ============ -->
+  <section id="view-dashboard" class="view"></section>
+
+  <!-- ============ 俱乐部 ============ -->
+  <section id="view-clubs" class="view">
+    <div class="view-head">
+      <h1>俱乐部管理</h1>
+      <div class="head-actions">
+        <button class="btn btn-primary" onclick="openClubModal()">+ 新建俱乐部</button>
+        <button class="btn" onclick="quickImportTeams()" title="一键导入 HOPL/CHPL/LVPL/OPL/GPL 全部队伍">快速导入队伍</button>
+      </div>
+    </div>
+    <div class="filters" id="club-filters"></div>
+    <div id="club-list"></div>
+  </section>
+
+  <!-- ============ 赛年列表 ============ -->
+  <section id="view-seasons" class="view">
+    <div class="view-head">
+      <h1>赛年</h1>
+      <button class="btn btn-primary" onclick="openSeasonModal()">+ 新建赛年</button>
+    </div>
+    <div id="season-list"></div>
+  </section>
+
+  <!-- ============ 赛年详情 ============ -->
+  <section id="view-season-detail" class="view">
+    <div class="view-head">
+      <h1 id="season-title">赛年</h1>
+      <div>
+        <button class="btn" onclick="openTournamentModal()">+ 新建赛事</button>
+      </div>
+    </div>
+    <div id="season-meta"></div>
+    <div class="section" id="season-points"></div>
+    <div class="section">
+      <h2>本赛年赛事</h2>
+      <div id="season-tournaments"></div>
+    </div>
+  </section>
+
+  <!-- ============ 赛事列表 ============ -->
+  <section id="view-tournaments" class="view">
+    <div class="view-head">
+      <h1>赛事</h1>
+      <button class="btn btn-primary" onclick="openTournamentModal()">+ 新建赛事</button>
+    </div>
+    <div class="filters" id="tournament-filters"></div>
+    <div id="tournament-list"></div>
+  </section>
+
+  <!-- ============ 赛事详情 ============ -->
+  <section id="view-tournament-detail" class="view">
+    <div class="view-head">
+      <h1 id="tournament-title">赛事</h1>
+      <div class="head-actions">
+        <button class="btn" onclick="openTeamPicker('tournament')">+ 添加参赛队伍</button>
+        <button class="btn" onclick="addStage()">+ 添加赛制阶段</button>
+        <button class="btn btn-danger" onclick="deleteCurrentTournament()">删除赛事</button>
+      </div>
+    </div>
+    <div id="tournament-meta"></div>
+    <div id="tournament-teams"></div>
+    <div id="tournament-stages"></div>
+    <div class="section">
+      <h2>最终名次</h2>
+      <div id="tournament-final-standings"></div>
+    </div>
+    <div id="tournament-points"></div>
+  </section>
+
+  <!-- ============ 队伍档案 ============ -->
+  <section id="view-team" class="view">
+    <div class="view-head">
+      <h1 id="team-title">队伍档案</h1>
+      <div class="head-actions">
+        <button class="btn" onclick="openClubModal(currentClubId)">编辑队伍</button>
+        <button class="btn btn-danger" onclick="deleteCurrentClub()">删除队伍</button>
+      </div>
+    </div>
+    <div id="team-meta"></div>
+    <div id="team-season-filter"></div>
+    <div class="section">
+      <h2>历届比赛成绩</h2>
+      <div id="team-history"></div>
+    </div>
+    <div class="section">
+      <h2>对阵成绩（Head-to-Head）</h2>
+      <div id="team-h2h"></div>
+    </div>
+  </section>
+
+  <!-- ============ 搜索结果 ============ -->
+  <section id="view-search" class="view">
+    <div class="view-head"><h1>搜索结果</h1></div>
+    <div id="search-results"></div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <span>The Game · 黄狗国赛事数据中心</span>
+  <span>数据仅保存在本浏览器 localStorage 中 · 请定期导出备份 · <a class="clickable" onclick="loadSample()">载入示例数据</a></span>
+</footer>
+
+<div id="toast" class="toast"></div>
+<input type="file" id="import-file" accept="application/json,.json" style="display:none">
+
+<!-- ============ 通用确认弹窗 ============ -->
+<div class="modal-overlay" id="modal-confirm">
+  <div class="modal">
+    <h3 id="confirm-title">确认操作</h3>
+    <p id="confirm-message" class="confirm-message"></p>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-confirm')">取消</button>
+      <button class="btn btn-danger" id="confirm-ok">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 俱乐部表单弹窗 ============ -->
+<div class="modal-overlay" id="modal-club">
+  <div class="modal modal-wide">
+    <h3 id="club-modal-title">新建俱乐部</h3>
+    <div class="form-grid">
+      <label>队伍全称
+        <input type="text" id="club-name" placeholder="例如：黄狗电竞">
+      </label>
+      <label>简称
+        <input type="text" id="club-short" placeholder="例如：HG">
+      </label>
+      <label>队伍类别
+        <select id="club-category" onchange="onClubCategoryChange()">
+          <option value="hupl">HUPL席位队伍</option>
+          <option value="secondary">次级队伍</option>
+          <option value="external">外赛区队伍</option>
+        </select>
+      </label>
+      <label id="club-seat-wrap" style="display:none">HUPL席位
+        <select id="club-seat">
+          <option value="fixed">固定席位</option>
+          <option value="temporary">临时席位</option>
+        </select>
+      </label>
+      <label id="club-region-wrap" style="display:none">外赛区归类
+        <select id="club-region" onchange="onClubRegionChange()"></select>
+      </label>
+      <label>队伍颜色
+        <input type="color" id="club-color" value="#1e3a5f">
+      </label>
+      <label class="full">备注
+        <input type="text" id="club-note" placeholder="可选">
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-club')">取消</button>
+      <button class="btn btn-primary" onclick="saveClub()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 赛年表单弹窗 ============ -->
+<div class="modal-overlay" id="modal-season">
+  <div class="modal">
+    <h3 id="season-modal-title">新建赛年</h3>
+    <div class="form-grid">
+      <label>赛年名称
+        <input type="text" id="season-name" placeholder="例如：2026 赛年">
+      </label>
+      <label>年份
+        <input type="number" id="season-year" placeholder="2026">
+      </label>
+      <label class="full">备注
+        <input type="text" id="season-note" placeholder="可选">
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-season')">取消</button>
+      <button class="btn btn-primary" onclick="saveSeason()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 赛事表单弹窗 ============ -->
+<div class="modal-overlay" id="modal-tournament">
+  <div class="modal modal-wide">
+    <h3>新建赛事</h3>
+    <div class="form-grid">
+      <label>赛事名称
+        <input type="text" id="t-name" placeholder="例如：HUPL 2026 National">
+      </label>
+      <label>赛事分类
+        <select id="t-type" onchange="onTournamentTypeChange()">
+          <option value="secondary">次级赛事</option>
+          <option value="hupl">HUPL</option>
+          <option value="international">国际赛事</option>
+        </select>
+      </label>
+      <label id="t-secondary-wrap">赛事子类型
+        <select id="t-secondary">
+          <option value="aleague">A-League</option>
+          <option value="promotion">晋升赛</option>
+          <option value="hudl">HUDL</option>
+        </select>
+      </label>
+      <label>所属赛年
+        <select id="t-season"></select>
+      </label>
+      <label>日期
+        <input type="text" id="t-date" placeholder="例如：2026-03">
+      </label>
+      <label class="full">赛制（可多选，按顺序生成阶段）
+        <div class="chips" id="t-formats"></div>
+      </label>
+      <label class="full">参赛队伍
+        <div class="team-pick" id="t-teams"></div>
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-tournament')">取消</button>
+      <button class="btn btn-primary" onclick="saveTournament()">创建赛事</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 队伍选择弹窗 ============ -->
+<div class="modal-overlay" id="modal-team-picker">
+  <div class="modal modal-wide">
+    <h3 id="team-picker-title">选择队伍</h3>
+    <div class="team-pick" id="team-picker-list"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-team-picker')">取消</button>
+      <button class="btn btn-primary" onclick="confirmTeamPicker()">确定</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
