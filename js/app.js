@@ -45,6 +45,8 @@ let currentTournamentId = null;
 let currentClubId = null;
 let editingClubId = null;
 let editingSeasonId = null;
+let seasonCopyFrom = null;      // 新建赛年时复制的源赛年 id
+let tournamentCopyFrom = null;  // 新建赛事时复制的源赛事 id
 let filters = { clubCategory: 'all', tournamentType: 'all' };
 let teamPicker = null;       // { target, selected:Set }
 let tForm = null;            // 新建赛事临时表单 { formats:[], teams:Set }
@@ -54,6 +56,7 @@ let confirmCallback = null;
 function uid(p){ return (p||'x') + '_' + Math.random().toString(36).slice(2,8) + Date.now().toString(36).slice(-3); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function $(id){ return document.getElementById(id); }
+function clone(x){ return x == null ? x : JSON.parse(JSON.stringify(x)); }
 function num(v){ const n = parseFloat(v); return isNaN(n) ? 0 : n; }
 
 function getClub(id){ return state.clubs.find(c => c.id === id); }
@@ -61,6 +64,11 @@ function getSeason(id){ return state.seasons.find(s => s.id === id); }
 function getTournament(id){ return state.tournaments.find(t => t.id === id); }
 function clubName(id){ const c = getClub(id); return c ? c.name : '（已删除队伍）'; }
 function clubColor(id){ const c = getClub(id); return c ? (c.color || autoColor(c.category, c.region)) : '#8899aa'; }
+function clubMatchesQuery(c, q){
+  if(!q) return true;
+  const hay = ((c.name || '') + ' ' + (c.shortName || '') + ' ' + (c.note || '')).toLowerCase();
+  return hay.indexOf(q) >= 0;
+}
 
 function categoryBadge(cat){
   const m = { hupl: 'badge-hupl', secondary: 'badge-secondary', external: 'badge-external' }[cat] || 'badge-type';
@@ -194,13 +202,20 @@ function rankHtml(r){
   const cls = r === 1 ? 'rank-1' : r === 2 ? 'rank-2' : r === 3 ? 'rank-3' : '';
   return '<span class="rank-medal ' + cls + '">' + r + '</span>';
 }
-function tournamentCard(t){
+function tournamentCard(t, opts){
   const stags = t.stages || [];
   const tags = [typeBadge(t.type)];
   if(t.subtype) tags.push('<span class="badge badge-format">' + esc(subtypeLabel(t.subtype)) + '</span>');
   tags.push('<span class="badge badge-format">' + (stags.length ? stags.map(s => FORMAT_LABELS[s.format] || s.format).join(' + ') : '未设赛制') + '</span>');
+  let order = '';
+  if(opts && opts.total > 1){
+    order = '<span class="card-order">' +
+      '<span class="fmt-arrow' + (opts.idx === 0 ? ' dis' : '') + '" onclick="event.stopPropagation();moveTournamentInSeason(\'' + t.id + '\',-1)">▲</span>' +
+      '<span class="fmt-arrow' + (opts.idx === opts.total - 1 ? ' dis' : '') + '" onclick="event.stopPropagation();moveTournamentInSeason(\'' + t.id + '\',1)">▼</span>' +
+      '</span>';
+  }
   return '<div class="card" onclick="openTournament(\'' + t.id + '\')">' +
-    '<h3>' + esc(t.name) + '</h3>' +
+    '<div class="card-head"><h3>' + esc(t.name) + '</h3>' + order + '</div>' +
     '<div class="meta">' + (t.seasonId ? esc((getSeason(t.seasonId)||{}).name || '') : '未归属赛年') + (t.date ? ' · ' + esc(t.date) : '') + '</div>' +
     '<div class="tags">' + tags.join('') + '</div></div>';
 }
@@ -348,11 +363,17 @@ function openSeason(id){ currentSeasonId = id; go('season-detail'); }
 
 function openSeasonModal(id){
   editingSeasonId = id || null;
+  seasonCopyFrom = null;
   const s = id ? getSeason(id) : null;
   $('season-modal-title').textContent = s ? '编辑赛年' : '新建赛年';
   $('season-name').value = s ? s.name : '';
   $('season-year').value = s ? (s.year || '') : new Date().getFullYear();
   $('season-note').value = s ? (s.note || '') : '';
+  $('season-copy-wrap').style.display = s ? 'none' : '';
+  $('season-copy').innerHTML = '<option value="">（不复制）</option>' +
+    state.seasons.filter(x => x.id !== id).slice().sort((a,b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
+  $('season-copy').value = '';
   openModal('modal-season');
 }
 function saveSeason(){
@@ -367,10 +388,22 @@ function saveSeason(){
     Object.assign(getSeason(editingSeasonId), data);
     toast('已更新赛年');
   } else {
-    state.seasons.push(Object.assign({ id: uid('s'), createdAt: Date.now(), points: { stations: [], clubIds: [], data: {} } }, data));
+    let points = { stations: [], clubIds: [], data: {} };
+    if(seasonCopyFrom){ const src = getSeason(seasonCopyFrom); if(src) points = clone(src.points || points); }
+    state.seasons.push(Object.assign({ id: uid('s'), createdAt: Date.now(), points: points }, data));
     toast('已创建赛年');
   }
   saveState(); closeModal('modal-season'); render();
+}
+function onSeasonCopyChange(){
+  const id = $('season-copy').value;
+  seasonCopyFrom = id || null;
+  if(!id) return;
+  const s = getSeason(id);
+  if(!s) return;
+  $('season-name').value = s.name + '（副本）';
+  $('season-year').value = s.year || new Date().getFullYear();
+  $('season-note').value = s.note || '';
 }
 function deleteSeason(id){
   const s = getSeason(id); if(!s) return;
@@ -401,12 +434,24 @@ function renderSeasonDetail(){
   if(ts.length === 0){
     el.innerHTML = '<div class="empty">本赛年暂无赛事。点击「新建赛事」。</div>';
   } else {
-    el.innerHTML = '<div class="cards">' + ts.map(tournamentCard).join('') + '</div>';
+    el.innerHTML = '<div class="cards">' + ts.map((t, i) => tournamentCard(t, { idx: i, total: ts.length })).join('') + '</div>';
   }
 }
 function updateSeasonField(field, value){
   const s = getSeason(currentSeasonId); if(!s) return;
   s[field] = (field === 'year') ? (parseInt(value) || 0) : value;
+  saveState(); renderSeasonDetail();
+}
+function moveTournamentInSeason(id, dir){
+  const s = getSeason(currentSeasonId); if(!s) return;
+  const t = getTournament(id); if(!t || t.seasonId !== s.id) return;
+  const siblings = state.tournaments.filter(x => x.seasonId === s.id); // 保持数组顺序
+  const i = siblings.findIndex(x => x.id === id);
+  const j = i + dir;
+  if(i < 0 || j < 0 || j >= siblings.length) return;
+  const gi = state.tournaments.indexOf(siblings[i]);
+  const gj = state.tournaments.indexOf(siblings[j]);
+  const tmp = state.tournaments[gi]; state.tournaments[gi] = state.tournaments[gj]; state.tournaments[gj] = tmp;
   saveState(); renderSeasonDetail();
 }
 
@@ -542,17 +587,42 @@ function setTournamentFilter(v){ filters.tournamentType = v; renderTournaments()
 function openTournament(id){ currentTournamentId = id; go('tournament-detail'); }
 
 function openTournamentModal(){
-  tForm = { formats: [], teams: new Set() };
+  tForm = { formats: [], teams: new Set(), teamQuery: '' };
+  tournamentCopyFrom = null;
   // 默认选中当前赛年
   $('t-season').innerHTML = '<option value="">（不归属赛年）</option>' +
     state.seasons.map(s => '<option value="' + s.id + '"' + (s.id === currentSeasonId ? ' selected' : '') + '>' + esc(s.name) + '</option>').join('');
   $('t-name').value = '';
   $('t-type').value = 'secondary';
   $('t-date').value = '';
+  $('t-team-search').value = '';
+  $('t-copy').innerHTML = '<option value="">（不复制）</option>' +
+    state.tournaments.slice().sort((a,b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
+  $('t-copy').value = '';
   onTournamentTypeChange();
   renderTournamentFormatChips();
+  renderTournamentFormatOrder();
   renderTournamentTeamChips();
   openModal('modal-tournament');
+}
+function onTournamentCopyChange(){
+  const id = $('t-copy').value;
+  tournamentCopyFrom = id || null;
+  if(!id) return;
+  const t = getTournament(id);
+  if(!t) return;
+  $('t-name').value = t.name + '（副本）';
+  $('t-type').value = t.type || 'secondary';
+  onTournamentTypeChange();
+  $('t-secondary').value = t.subtype || $('t-secondary').value;
+  $('t-season').value = t.seasonId || '';
+  $('t-date').value = t.date || '';
+  tForm.formats = (t.stages || []).map(s => s.format).filter(Boolean);
+  tForm.teams = new Set(t.teamIds || []);
+  renderTournamentFormatChips();
+  renderTournamentFormatOrder();
+  renderTournamentTeamChips();
 }
 function onTournamentTypeChange(){
   const type = $('t-type').value;
@@ -565,20 +635,40 @@ function renderTournamentFormatChips(){
     '<span class="chip' + (tForm.formats.includes(f[0]) ? ' on' : '') + '" onclick="toggleFormatChip(\'' + f[0] + '\')">' + f[1] + '</span>'
   ).join('');
 }
+function renderTournamentFormatOrder(){
+  const el = $('t-formats-order');
+  if(!tForm.formats.length){ el.innerHTML = '<span class="muted">尚未选择赛制（选中后在此调整阶段顺序）</span>'; return; }
+  el.innerHTML = tForm.formats.map((f, i) =>
+    '<span class="chip on">' + (i + 1) + '. ' + FORMAT_LABELS[f] +
+    ' <span class="fmt-arrow' + (i === 0 ? ' dis' : '') + '" onclick="moveFormat(' + i + ',-1)">▲</span>' +
+    ' <span class="fmt-arrow' + (i === tForm.formats.length - 1 ? ' dis' : '') + '" onclick="moveFormat(' + i + ',1)">▼</span>' +
+    '</span>'
+  ).join('');
+}
 function toggleFormatChip(f){
   const i = tForm.formats.indexOf(f);
   if(i >= 0) tForm.formats.splice(i, 1); else tForm.formats.push(f);
   renderTournamentFormatChips();
+  renderTournamentFormatOrder();
+}
+function moveFormat(i, dir){
+  const j = i + dir;
+  if(j < 0 || j >= tForm.formats.length) return;
+  const t = tForm.formats[i]; tForm.formats[i] = tForm.formats[j]; tForm.formats[j] = t;
+  renderTournamentFormatOrder();
 }
 function renderTournamentTeamChips(){
   const cats = { hupl: 0, secondary: 1, external: 2 };
-  const clubs = state.clubs.slice().sort((a,b) => (cats[a.category] - cats[b.category]) || a.name.localeCompare(b.name, 'zh'));
-  $('t-teams').innerHTML = clubs.map(c =>
+  const q = (tForm.teamQuery || '').toLowerCase();
+  const clubs = state.clubs.slice().sort((a,b) => (cats[a.category] - cats[b.category]) || a.name.localeCompare(b.name, 'zh'))
+    .filter(c => !q || clubMatchesQuery(c, q));
+  $('t-teams').innerHTML = clubs.length ? clubs.map(c =>
     '<span class="team-chip' + (tForm.teams.has(c.id) ? ' on' : '') + '" onclick="toggleTeamChip(\'' + c.id + '\')">' +
     '<span class="dot" style="background:' + clubColor(c.id) + '"></span>' + esc(c.name) +
     ' <span class="muted">' + esc(CATEGORY_LABELS[c.category]) + '</span></span>'
-  ).join('');
+  ).join('') : '<span class="muted">没有匹配的队伍</span>';
 }
+function tTeamSearch(q){ tForm.teamQuery = q; renderTournamentTeamChips(); }
 function toggleTeamChip(id){ if(tForm.teams.has(id)) tForm.teams.delete(id); else tForm.teams.add(id); renderTournamentTeamChips(); }
 
 function saveTournament(){
@@ -600,8 +690,18 @@ function saveTournament(){
     note: '',
     createdAt: Date.now()
   };
-  // 按选择顺序生成阶段
-  tForm.formats.forEach(f => { t.stages.push(newStage(f, t.teamIds)); });
+  if(tournamentCopyFrom){
+    const src = getTournament(tournamentCopyFrom);
+    if(src){
+      t.stages = clone(src.stages || []);
+      t.finalStandings = clone(src.finalStandings || []);
+      t.points = clone(src.points || null);
+      t.note = src.note || '';
+    }
+  } else {
+    // 按选择顺序生成阶段
+    tForm.formats.forEach(f => { t.stages.push(newStage(f, t.teamIds)); });
+  }
   state.tournaments.push(t);
   saveState(); closeModal('modal-tournament');
   toast('已创建赛事');
@@ -1771,7 +1871,7 @@ function renderSearch(){
    队伍选择弹窗
    ============================================================ */
 function openTeamPicker(target){
-  teamPicker = { target: target, selected: new Set() };
+  teamPicker = { target: target, selected: new Set(), query: '' };
   // 预选
   if(target === 'tournament'){
     const t = getTournament(currentTournamentId);
@@ -1787,18 +1887,22 @@ function openTeamPicker(target){
     (c.relatedIds || []).forEach(id => teamPicker.selected.add(id));
   }
   $('team-picker-title').textContent = target === 'tournament' ? '选择参赛队伍' : (target.startsWith('link:') ? '选择要关联的队伍' : '选择积分表队伍');
+  $('team-picker-search').value = '';
   renderTeamPickerList();
   openModal('modal-team-picker');
 }
 function renderTeamPickerList(){
   const cats = { hupl: 0, secondary: 1, external: 2 };
-  const clubs = state.clubs.slice().sort((a,b) => (cats[a.category] - cats[b.category]) || a.name.localeCompare(b.name, 'zh'));
-  $('team-picker-list').innerHTML = clubs.map(c =>
+  const q = (teamPicker.query || '').toLowerCase();
+  const clubs = state.clubs.slice().sort((a,b) => (cats[a.category] - cats[b.category]) || a.name.localeCompare(b.name, 'zh'))
+    .filter(c => !q || clubMatchesQuery(c, q));
+  $('team-picker-list').innerHTML = clubs.length ? clubs.map(c =>
     '<span class="team-chip' + (teamPicker.selected.has(c.id) ? ' on' : '') + '" onclick="togglePickerTeam(\'' + c.id + '\')">' +
     '<span class="dot" style="background:' + clubColor(c.id) + '"></span>' + esc(c.name) +
     ' <span class="muted">' + esc(CATEGORY_LABELS[c.category]) + '</span></span>'
-  ).join('');
+  ).join('') : '<span class="muted">没有匹配的队伍</span>';
 }
+function pickerSearch(q){ teamPicker.query = q; renderTeamPickerList(); }
 function togglePickerTeam(id){ if(teamPicker.selected.has(id)) teamPicker.selected.delete(id); else teamPicker.selected.add(id); renderTeamPickerList(); }
 function confirmTeamPicker(){
   if(!teamPicker) return;

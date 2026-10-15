@@ -210,6 +210,9 @@
   <div class="modal">
     <h3 id="season-modal-title">新建赛年</h3>
     <div class="form-grid">
+      <label class="full" id="season-copy-wrap">复制已有赛年（可选）
+        <select id="season-copy" onchange="onSeasonCopyChange()"></select>
+      </label>
       <label>赛年名称
         <input type="text" id="season-name" placeholder="例如：2026 赛年">
       </label>
@@ -232,6 +235,9 @@
   <div class="modal modal-wide">
     <h3>新建赛事</h3>
     <div class="form-grid">
+      <label class="full">复制已有赛事（可选）
+        <select id="t-copy" onchange="onTournamentCopyChange()"></select>
+      </label>
       <label>赛事名称
         <input type="text" id="t-name" placeholder="例如：HUPL 2026 National">
       </label>
@@ -255,10 +261,12 @@
       <label>日期
         <input type="text" id="t-date" placeholder="例如：2026-03">
       </label>
-      <label class="full">赛制（可多选，按顺序生成阶段）
+      <label class="full">赛制（可多选，勾选后可在下方调整阶段顺序）
         <div class="chips" id="t-formats"></div>
+        <div class="chips" id="t-formats-order"></div>
       </label>
       <label class="full">参赛队伍
+        <input type="text" id="t-team-search" class="pick-search" placeholder="搜索队伍名称 / 简称…" oninput="tTeamSearch(this.value)">
         <div class="team-pick" id="t-teams"></div>
       </label>
     </div>
@@ -273,6 +281,7 @@
 <div class="modal-overlay" id="modal-team-picker">
   <div class="modal modal-wide">
     <h3 id="team-picker-title">选择队伍</h3>
+    <input type="text" id="team-picker-search" class="pick-search" placeholder="搜索队伍名称 / 简称…" oninput="pickerSearch(this.value)">
     <div class="team-pick" id="team-picker-list"></div>
     <div class="modal-actions">
       <button class="btn" onclick="closeModal('modal-team-picker')">取消</button>

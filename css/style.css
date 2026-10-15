@@ -144,6 +144,12 @@ input[type=color].cell-input{height:24px;padding:0}
 .card h3{margin:0 0 8px;color:var(--navy);font-size:15px}
 .card .meta{color:var(--muted);font-size:12.5px}
 .card .tags{margin-top:8px;display:flex;gap:5px;flex-wrap:wrap}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.card-head h3{margin:0;flex:1;min-width:0}
+.card-order{display:flex;gap:4px;flex-shrink:0}
+.card-order .fmt-arrow{display:inline-block;min-width:22px;text-align:center;border:1px solid var(--border);border-radius:4px;line-height:1.6;color:var(--muted)}
+.card-order .fmt-arrow:hover{color:var(--navy);border-color:var(--navy-light)}
+.card-order .fmt-arrow.dis{opacity:.3;pointer-events:none}
 
 /* ---------- 统计块 ---------- */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:22px}
@@ -190,6 +196,11 @@ input[type=color].cell-input{height:24px;padding:0}
 .team-chip .dot{width:9px;height:9px;border-radius:50%}
 .team-chip.on{background:var(--navy);color:#fff;border-color:var(--navy)}
 .team-chip.on .dot{border:1px solid #fff}
+.pick-search{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:14px;margin-bottom:8px}
+.pick-search:focus{outline:none;border-color:var(--navy-light)}
+.fmt-arrow{cursor:pointer;opacity:.9;font-weight:800;padding:0 3px;font-size:13px}
+.fmt-arrow:hover{opacity:1}
+.fmt-arrow.dis{opacity:.25;cursor:default;pointer-events:none}
 
 /* ---------- 弹窗 ---------- */
 .modal-overlay{
