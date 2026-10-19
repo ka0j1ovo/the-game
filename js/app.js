@@ -50,6 +50,7 @@ let tournamentCopyFrom = null;  // 新建赛事时复制的源赛事 id
 let filters = { clubCategory: 'all', tournamentType: 'all' };
 let teamPicker = null;       // { target, selected:Set }
 let tForm = null;            // 新建赛事临时表单 { formats:[], teams:Set }
+let quickFill = { stageId: '', queue: [] };  // 快捷填入：当前阶段与待填队伍队列
 let confirmCallback = null;
 
 /* ---------------- 工具 ---------------- */
@@ -787,15 +788,19 @@ function stageCardHtml(t, s){
     '<select class="cell-input" style="width:auto" onchange="changeStageFormat(\'' + s.id + '\',this.value)">' +
     Object.keys(FORMAT_LABELS).map(f => '<option value="' + f + '"' + (s.format === f ? ' selected' : '') + '>' + FORMAT_LABELS[f] + '</option>').join('') + '</select>' +
     '<span class="badge badge-format">' + (s.matches || []).length + ' 场</span>' +
-    '<div class="stage-tools">';
+    '<div class="stage-tools">' +
+    '<button class="btn btn-sm' + (qfActive(s.id) ? ' btn-primary' : '') + '" id="qf-btn-' + s.id + '" onclick="toggleQuickFill(\'' + s.id + '\')">快捷填入</button>';
   if(s.format === 'wc'){
-    html += '<button class="btn btn-sm btn-danger-text" onclick="deleteStage(\'' + s.id + '\')">删阶段</button>';
+    html += '<button class="btn btn-sm btn-danger-text" onclick="clearStageTeams(\'' + s.id + '\')">清空队伍</button>' +
+      '<button class="btn btn-sm btn-danger-text" onclick="deleteStage(\'' + s.id + '\')">删阶段</button>';
   } else {
     html += '<button class="btn btn-sm" onclick="generateMatches(\'' + s.id + '\')">生成对阵</button>' +
       '<button class="btn btn-sm" onclick="addMatch(\'' + s.id + '\')">+ 对局</button>' +
+      '<button class="btn btn-sm btn-danger-text" onclick="clearStageTeams(\'' + s.id + '\')">清空队伍</button>' +
       '<button class="btn btn-sm btn-danger-text" onclick="deleteStage(\'' + s.id + '\')">删阶段</button>';
   }
   html += '</div></div>';
+  html += '<div id="qf-panel-' + s.id + '">' + quickFillPanelHtml(t, s) + '</div>';
   if(s.format === 'wc'){
     html += '<div id="stage-body-' + s.id + '">' + wcStageBodyHtml(t, s) + '</div>';
   } else if(s.format === 'single' || s.format === 'double'){
@@ -874,8 +879,8 @@ function matchesTableHtml(t, s){
       html += '<td><input class="cell-input txt" style="width:70px" value="' + esc(m.round) + '" placeholder="轮次" onchange="updateMatchField(\'' + s.id + '\',\'' + m.id + '\',\'round\',this.value)"></td>';
     }
     html += '<td>' + teamSelect(t, m.teamAId, s.id, m.id, 'teamAId') + '</td>';
-    html += '<td><input class="cell-input num" type="number" value="' + esc(m.scoreA) + '" onchange="updateMatchField(\'' + s.id + '\',\'' + m.id + '\',\'scoreA\',this.value)"></td>';
-    html += '<td><input class="cell-input num" type="number" value="' + esc(m.scoreB) + '" onchange="updateMatchField(\'' + s.id + '\',\'' + m.id + '\',\'scoreB\',this.value)"></td>';
+    html += '<td>' + scoreSelectHtml(s.id, m.id, 'scoreA', m.scoreA, 'cell-input num', 'width:56px') + '</td>';
+    html += '<td>' + scoreSelectHtml(s.id, m.id, 'scoreB', m.scoreB, 'cell-input num', 'width:56px') + '</td>';
     html += '<td>' + teamSelect(t, m.teamBId, s.id, m.id, 'teamBId') + '</td>';
     html += '<td><select class="cell-input" style="width:auto" onchange="updateMatchField(\'' + s.id + '\',\'' + m.id + '\',\'winnerId\',this.value)">' +
       '<option value=""' + (!m.winnerId ? ' selected' : '') + '>自动</option>' +
@@ -894,6 +899,7 @@ function matchesTableHtml(t, s){
   return html;
 }
 function teamSelect(t, selected, stageId, matchId, field){
+  if(qfActive(stageId) && !selected) return qfSlotHtml(stageId, matchId, field);
   const teams = t.teamIds || [];
   let html = '<select class="cell-input" style="width:130px" onchange="updateMatchField(\'' + stageId + '\',\'' + matchId + '\',\'' + field + '\',this.value)"><option value="">— 选择队伍 —</option>';
   teams.forEach(id => { html += '<option value="' + id + '"' + (selected === id ? ' selected' : '') + '>' + esc(clubName(id)) + '</option>'; });
@@ -902,6 +908,84 @@ function teamSelect(t, selected, stageId, matchId, field){
   return html;
 }
 function roundsList(n){ const r = ['第1轮']; for(let i=2;i<=n;i++) r.push('第' + i + '轮'); r.push('决赛'); return r; }
+
+function scoreSelectHtml(stageId, matchId, field, value, cls, style){
+  const cur = (value === null || value === undefined) ? '' : String(value);
+  const opts = ['', '0', '1', '2', '3', '4', '5'];
+  return '<select class="' + (cls || 'cell-input num') + '"' + (style ? ' style="' + style + '"' : '') +
+    ' onchange="updateMatchField(\'' + stageId + '\',\'' + matchId + '\',\'' + field + '\',this.value)">' +
+    opts.map(v => '<option value="' + v + '"' + (cur === v ? ' selected' : '') + '>' + (v === '' ? '—' : v) + '</option>').join('') +
+    '</select>';
+}
+
+/* ---------------- 快捷填入 ---------------- */
+function qfActive(stageId){ return quickFill.stageId === stageId; }
+function qfNextName(){ return quickFill.queue.length ? clubName(quickFill.queue[0]) : ''; }
+function quickFillPanelHtml(t, s){
+  if(!qfActive(s.id)) return '';
+  const teams = t.teamIds || [];
+  let html = '<div class="qf-panel">' +
+    '<div class="qf-head"><b>快捷填入</b><span class="muted">按顺序点选队伍（再次点击取消），然后依次点击赛程中的「＋」空格</span></div>';
+  html += '<div class="chips">' + teams.map(id => {
+    const i = quickFill.queue.indexOf(id);
+    return '<span class="chip qf-team' + (i >= 0 ? ' on' : '') + '" onclick="qfToggleTeam(\'' + s.id + '\',\'' + id + '\')">' +
+      (i >= 0 ? '<span class="qf-no">' + (i + 1) + '</span>' : '') + esc(clubName(id)) + '</span>';
+  }).join('') + '</div>';
+  html += '<div class="qf-status">' +
+    (quickFill.queue.length
+      ? '待填 <b>' + quickFill.queue.length + '</b> 队 · 下一个：<b class="qf-next">' + esc(qfNextName()) + '</b>'
+      : '<span class="muted">请先按顺序点选队伍</span>') +
+    ' <button class="btn btn-sm" onclick="qfClear(\'' + s.id + '\')">清空队列</button></div>';
+  html += '</div>';
+  return html;
+}
+function renderQuickFillPanel(stageId){
+  const t = findStageOwner(stageId), s = findStage(stageId);
+  const el = $('qf-panel-' + stageId);
+  if(el && t && s) el.innerHTML = quickFillPanelHtml(t, s);
+  const btn = $('qf-btn-' + stageId);
+  if(btn){ const on = qfActive(stageId); btn.classList.toggle('btn-primary', on); }
+}
+function toggleQuickFill(stageId){
+  const s = findStage(stageId); if(!s) return;
+  if(qfActive(stageId)) quickFill = { stageId: '', queue: [] };
+  else quickFill = { stageId: stageId, queue: [] };
+  renderQuickFillPanel(stageId);
+  refreshStage(stageId);
+  if(qfActive(stageId)) toast('快捷填入：先点选队伍，再点击空格');
+}
+function qfToggleTeam(stageId, teamId){
+  if(!qfActive(stageId)) return;
+  const i = quickFill.queue.indexOf(teamId);
+  if(i >= 0) quickFill.queue.splice(i, 1); else quickFill.queue.push(teamId);
+  renderQuickFillPanel(stageId);
+}
+function qfClear(stageId){ if(!qfActive(stageId)) return; quickFill.queue = []; renderQuickFillPanel(stageId); }
+function qfSlotHtml(stageId, matchId, field){
+  const has = quickFill.queue.length > 0;
+  return '<span class="qf-slot' + (has ? '' : ' qf-slot-empty') + '" onclick="qfAssign(\'' + stageId + '\',\'' + matchId + '\',\'' + field + '\')" title="' +
+    esc(has ? '填入：' + qfNextName() : '请先在快捷填入面板中选择队伍') + '">＋ 填入</span>';
+}
+function qfAssign(stageId, matchId, field){
+  const s = findStage(stageId); if(!s) return;
+  if(!qfActive(stageId)){ toast('请先点击「快捷填入」', 'err'); return; }
+  if(!quickFill.queue.length){ toast('队伍队列已空，请重新点选队伍', 'err'); return; }
+  const m = (s.matches || []).find(x => x.id === matchId); if(!m || m[field]) return;
+  m[field] = quickFill.queue.shift();
+  advanceFromMatch(s, m);
+  saveState();
+  renderQuickFillPanel(stageId);
+  refreshStage(stageId);
+}
+function qfAssignSeed(stageId, groupId, seed){
+  const s = findStage(stageId); if(!s) return;
+  if(!qfActive(stageId)){ toast('请先点击「快捷填入」', 'err'); return; }
+  if(!quickFill.queue.length){ toast('队伍队列已空，请重新点选队伍', 'err'); return; }
+  const g = (s.config.groups || []).find(x => x.id === groupId); if(!g) return;
+  if(g.seeds[seed]) return;
+  g.seeds[seed] = quickFill.queue.shift();
+  saveState(); refreshStage(stageId);
+}
 
 function matchWinner(m){
   if(m.winnerId === 'A') return m.teamAId;
@@ -941,6 +1025,7 @@ function refreshStage(stageId){
   const t = findStageOwner(stageId);
   const s = findStage(stageId);
   if(!s) return;
+  renderQuickFillPanel(stageId);
   if(s.format === 'wc'){
     const b = $('stage-body-' + stageId);
     if(b) b.innerHTML = wcStageBodyHtml(t, s);
@@ -1182,12 +1267,17 @@ function bracketMatchHtml(t, s, m){
   const teams = t.teamIds || [];
   const row = (teamId, teamField, scoreField) => {
     const cls = (w && w !== 'draw' && teamId && teamId === w) ? ' winner' : '';
-    let opt = '<option value="">—</option>';
-    teams.forEach(id => { opt += '<option value="' + id + '"' + (teamId === id ? ' selected' : '') + '>' + esc(clubName(id)) + '</option>'; });
-    if(teamId && !teams.includes(teamId)) opt += '<option value="' + teamId + '" selected>' + esc(clubName(teamId)) + '</option>';
+    let teamCell;
+    if(qfActive(s.id) && !teamId){
+      teamCell = qfSlotHtml(s.id, m.id, teamField);
+    } else {
+      let opt = '<option value="">—</option>';
+      teams.forEach(id => { opt += '<option value="' + id + '"' + (teamId === id ? ' selected' : '') + '>' + esc(clubName(id)) + '</option>'; });
+      if(teamId && !teams.includes(teamId)) opt += '<option value="' + teamId + '" selected>' + esc(clubName(teamId)) + '</option>';
+      teamCell = '<select onchange="updateMatchField(\'' + s.id + '\',\'' + m.id + '\',\'' + teamField + '\',this.value)">' + opt + '</select>';
+    }
     return '<div class="bracket-team' + cls + '"><span class="dot" style="background:' + (teamId ? clubColor(teamId) : '#c9d3df') + '"></span>' +
-      '<select onchange="updateMatchField(\'' + s.id + '\',\'' + m.id + '\',\'' + teamField + '\',this.value)">' + opt + '</select>' +
-      '<input class="bracket-score" type="number" value="' + esc(m[scoreField]) + '" onchange="updateMatchField(\'' + s.id + '\',\'' + m.id + '\',\'' + scoreField + '\',this.value)"></div>';
+      teamCell + scoreSelectHtml(s.id, m.id, scoreField, m[scoreField], 'bracket-score') + '</div>';
   };
   return '<div class="bracket-match" data-id="' + m.id + '"' +
     (m.nextId ? ' data-next="' + m.nextId + '"' : '') +
@@ -1242,6 +1332,22 @@ function deleteStage(stageId){
     t.stages = (t.stages||[]).filter(s => s.id !== stageId);
     saveState(); renderTournamentDetail();
   });
+}
+/* 一键清空本阶段赛程中的队伍与比分（保留轮次 / 对局结构 / 分组种子 / 阶段名次表） */
+function clearStageTeams(stageId){
+  const s = findStage(stageId); if(!s) return;
+  const ms = s.matches || [];
+  const filled = ms.filter(m => m.teamAId || m.teamBId || m.winnerId ||
+    (m.scoreA !== '' && m.scoreA != null) || (m.scoreB !== '' && m.scoreB != null));
+  if(filled.length === 0){ toast('本阶段赛程里没有可清空的队伍或比分'); return; }
+  confirmDialog('清空队伍与比分',
+    '将清空本阶段 ' + filled.length + ' 场对局中的队伍、比分和胜者（共 ' + ms.length + ' 场对局，保留轮次与对阵结构）。此操作不可恢复，确定吗？',
+    () => {
+      ms.forEach(m => { m.teamAId = ''; m.teamBId = ''; m.scoreA = ''; m.scoreB = ''; m.winnerId = ''; });
+      saveState();
+      refreshStage(stageId);
+      toast('已清空 ' + filled.length + ' 场对局的队伍与比分');
+    });
 }
 function changeStageFormat(stageId, format){
   const s = findStage(stageId);
@@ -1361,9 +1467,12 @@ function wcSeedHtml(t, s){
     for(let i = 1; i <= 4; i++){
       const tid = g.seeds[i] || '';
       const src = (s.config.sourceLabels || {})[tid] || '';
+      const seedCell = (qfActive(s.id) && !tid)
+        ? '<span class="qf-slot qf-slot-seed" onclick="qfAssignSeed(\'' + s.id + '\',\'' + g.id + '\',' + i + ')">＋ 填入</span>'
+        : '<select class="cell-input" style="width:132px" onchange="wcSetSeed(\'' + s.id + '\',\'' + g.id + '\',' + i + ',this.value)">' + teamOpts(tid) + '</select>';
       html += '<div style="display:flex;align-items:center;gap:5px;margin:4px 0">' +
         '<span class="badge badge-format" style="width:24px;text-align:center">' + i + '</span>' +
-        '<select class="cell-input" style="width:132px" onchange="wcSetSeed(\'' + s.id + '\',\'' + g.id + '\',' + i + ',this.value)">' + teamOpts(tid) + '</select>' +
+        seedCell +
         '<select class="cell-input" style="width:118px" onchange="wcSetSource(\'' + s.id + '\',\'' + tid + '\',this.value)" title="参赛来源"><option value="">来源—</option>' +
         WC_SOURCES.map(x => '<option value="' + x + '"' + (src === x ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select>' +
         '</div>';
@@ -1409,8 +1518,8 @@ function wcMatchRowHtml(t, s, m){
   let html = '<tr>' +
     '<td><input class="cell-input txt" style="width:140px" value="' + esc(m.round) + '" onchange="updateMatchField(\'' + s.id + '\',\'' + m.id + '\',\'round\',this.value)"></td>' +
     '<td>' + teamSelect(t, m.teamAId, s.id, m.id, 'teamAId') + '</td>' +
-    '<td><input class="cell-input num" type="number" value="' + esc(m.scoreA) + '" onchange="updateMatchField(\'' + s.id + '\',\'' + m.id + '\',\'scoreA\',this.value)"></td>' +
-    '<td><input class="cell-input num" type="number" value="' + esc(m.scoreB) + '" onchange="updateMatchField(\'' + s.id + '\',\'' + m.id + '\',\'scoreB\',this.value)"></td>' +
+    '<td>' + scoreSelectHtml(s.id, m.id, 'scoreA', m.scoreA, 'cell-input num', 'width:56px') + '</td>' +
+    '<td>' + scoreSelectHtml(s.id, m.id, 'scoreB', m.scoreB, 'cell-input num', 'width:56px') + '</td>' +
     '<td>' + teamSelect(t, m.teamBId, s.id, m.id, 'teamBId') + '</td>' +
     '<td><select class="cell-input" style="width:auto" onchange="updateMatchField(\'' + s.id + '\',\'' + m.id + '\',\'winnerId\',this.value)">' +
     '<option value=""' + (!m.winnerId ? ' selected' : '') + '>自动</option>' +

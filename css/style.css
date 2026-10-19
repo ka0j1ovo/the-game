@@ -249,6 +249,19 @@ input[type=color].cell-input{height:24px;padding:0}
 .bracket-team select:focus{background:#fff}
 .bracket-score{width:36px;text-align:center;border:1px solid var(--border);border-radius:4px;padding:2px 3px;font-weight:700;font-size:13px;background:#fff}
 .bracket-score:focus{outline:none;border-color:var(--navy-light)}
+select.bracket-score{width:44px;padding:2px 1px;height:26px;text-align:center;text-align-last:center}
+
+/* ---------- 快捷填入 ---------- */
+.qf-panel{background:#f3f7fc;border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:12px}
+.qf-head{display:flex;gap:10px;align-items:center;margin-bottom:8px;color:var(--navy);font-size:13.5px}
+.qf-status{margin-top:8px;display:flex;align-items:center;gap:8px;font-size:13px;flex-wrap:wrap}
+.qf-team .qf-no{display:inline-block;min-width:17px;height:17px;line-height:17px;text-align:center;border-radius:9px;background:#fff;color:var(--navy);font-size:11px;font-weight:800;margin-right:5px}
+.qf-next{color:var(--navy)}
+.qf-slot{display:inline-flex;align-items:center;justify-content:center;padding:1px 8px;border:1px dashed var(--navy-light);border-radius:4px;color:var(--navy-light);cursor:pointer;font-size:12px;font-weight:700;white-space:nowrap}
+.qf-slot:hover{background:var(--blue-bg);border-style:solid}
+.qf-slot-empty{opacity:.55}
+.qf-slot-seed{width:132px;padding:5px 8px}
+.bracket-team .qf-slot{flex:1;min-width:0;justify-content:flex-start;border-color:#b9cbe0;background:#f8fbff;padding:3px 6px;font-size:12px}
 
 /* ---------- 提示 toast ---------- */
 .toast{
