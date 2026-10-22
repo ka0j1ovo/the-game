@@ -225,6 +225,8 @@ th.sort-th:hover{background:var(--navy-light)}
 .modal h3{margin:0 0 16px;color:var(--navy)}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}
 .confirm-message{color:var(--text);font-size:14px;white-space:pre-line}
+.prompt-input{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:6px;font-size:15px;font-weight:600;color:var(--text)}
+.prompt-input:focus{outline:none;border-color:var(--navy-light)}
 
 /* ---------- 阶段卡片 ---------- */
 .stage-card{

@@ -171,6 +171,19 @@
   </div>
 </div>
 
+<!-- ============ 输入弹窗 ============ -->
+<div class="modal-overlay" id="modal-prompt">
+  <div class="modal">
+    <h3 id="prompt-title">输入</h3>
+    <p id="prompt-message" class="confirm-message"></p>
+    <input type="text" id="prompt-input" class="prompt-input" onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('prompt-ok').click();}">
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-prompt')">取消</button>
+      <button class="btn btn-primary" id="prompt-ok">确定</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ 俱乐部表单弹窗 ============ -->
 <div class="modal-overlay" id="modal-club">
   <div class="modal modal-wide">

@@ -11,7 +11,7 @@ const STORAGE_KEY = 'thegame-data-v1';
 const CATEGORY_LABELS = { hupl: 'HUPL席位队伍', secondary: '次级队伍', external: '外赛区队伍' };
 const REGIONS = { HO: '红狗国', CH: '橙狗', LV: '绿狗', OP: '剩余赛区', GP: '粉金赛区' };
 const TYPE_LABELS = { secondary: '次级赛事', hupl: 'HUPL', international: '国际赛事' };
-const FORMAT_LABELS = { group: '小组赛', swiss: '瑞士轮', single: '单败赛制', double: '双败赛制', wc: 'WC赛制' };
+const FORMAT_LABELS = { group: '小组赛', swiss: '瑞士轮', single: '单败赛制', double: '双败赛制', 'tiered-double': '分级双败', wc: 'WC赛制' };
 const WC_SOURCES = ['小世界赛冠军', '世界积分直邀', '地区积分第一', 'world2晋级'];
 const REGION_COLORS = { HO: '#a83232', CH: '#e07b3e', LV: '#2e7d4f', OP: '#1e3a5f', GP: '#d85c8e' };
 const CATEGORY_COLORS = { hupl: '#c9a227', secondary: '#e6d58a' };
@@ -700,7 +700,7 @@ function onTournamentTypeChange(){
   $('t-secondary').innerHTML = SUBTYPES[type].map(x => '<option value="' + x[0] + '">' + esc(x[1]) + '</option>').join('');
 }
 function renderTournamentFormatChips(){
-  const formats = [['group','小组赛'], ['swiss','瑞士轮'], ['single','单败赛制'], ['double','双败赛制'], ['wc','WC赛制']];
+  const formats = [['group','小组赛'], ['swiss','瑞士轮'], ['single','单败赛制'], ['double','双败赛制'], ['tiered-double','分级双败'], ['wc','WC赛制']];
   $('t-formats').innerHTML = formats.map(f =>
     '<span class="chip' + (tForm.formats.includes(f[0]) ? ' on' : '') + '" onclick="toggleFormatChip(\'' + f[0] + '\')">' + f[1] + '</span>'
   ).join('');
@@ -789,7 +789,7 @@ function newStage(format, teamIds){
   const s = { id: uid('stg'), name: FORMAT_LABELS[format], format: format, config: {}, matches: [], standings: [] };
   if(format === 'group') s.config = { groups: [{ id: uid('g'), name: 'A组', teamIds: [] }] };
   if(format === 'swiss') s.config = { rounds: 5 };
-  if(format === 'single' || format === 'double') s.config = {};
+  if(format === 'single' || format === 'double' || format === 'tiered-double') s.config = {};
   if(format === 'wc') s.config = initWcConfig();
   return s;
 }
@@ -821,7 +821,7 @@ function renderTournamentDetail(){
 
   renderTournamentTeams(t);
   $('tournament-stages').innerHTML = (t.stages || []).map(s => stageCardHtml(t, s)).join('');
-  (t.stages || []).forEach(s => { if(s.format === 'single' || s.format === 'double') drawBracketConnectors(s.id); });
+  (t.stages || []).forEach(s => { if(isBracketFormat(s.format)) drawBracketConnectors(s.id); });
   renderFinalStandings();
   renderPointsFor('tournament', t.id);
 }
@@ -876,10 +876,13 @@ function stageCardHtml(t, s){
       '<button class="btn btn-sm btn-danger-text" onclick="deleteStage(\'' + s.id + '\')">删阶段</button>';
   }
   html += '</div></div>';
+  if(s.format === 'tiered-double'){
+    html += '<div class="muted" style="margin:0 0 8px">分级双败（最多 10 队）：种子 1-2 从胜者组第 2 轮开打，种子 3-6 从胜者组第 1 轮开打，种子 7-10 从败者组第 1 轮开打。</div>';
+  }
   html += '<div id="qf-panel-' + s.id + '">' + quickFillPanelHtml(t, s) + '</div>';
   if(s.format === 'wc'){
     html += '<div id="stage-body-' + s.id + '">' + wcStageBodyHtml(t, s) + '</div>';
-  } else if(s.format === 'single' || s.format === 'double'){
+  } else if(isBracketFormat(s.format)){
     html += '<div id="stage-bracket-' + s.id + '">' + bracketHtml(t, s) + '</div>';
     html += '<div id="stage-standings-' + s.id + '">' + stageStandingsHtml(t, s) + '</div>';
   } else {
@@ -1000,6 +1003,9 @@ function qfNextName(){ return quickFill.queue.length ? clubName(quickFill.queue[
 function quickFillPanelHtml(t, s){
   if(!qfActive(s.id)) return '';
   const teams = t.teamIds || [];
+  // 每次打开 / 刷新都以最新参赛队伍名单为准：已移出名单的队伍从队列剔除
+  const roster = new Set(teams);
+  if(quickFill.queue.some(id => !roster.has(id))) quickFill.queue = quickFill.queue.filter(id => roster.has(id));
   let html = '<div class="qf-panel">' +
     '<div class="qf-head"><b>快捷填入</b><span class="muted">按顺序点选队伍（再次点击取消），然后依次点击赛程中的「＋」空格</span></div>';
   html += '<div class="chips">' + teams.map(id => {
@@ -1092,6 +1098,7 @@ function addMatch(stageId){
   if(s.format === 'swiss') m.round = '第1轮';
   if(s.format === 'single') m.round = '第1轮';
   if(s.format === 'double'){ m.round = '第1轮'; m.bracket = 'winners'; }
+  if(s.format === 'tiered-double'){ m.round = '胜者组第1轮'; m.bracket = 'winners'; }
   s.matches = s.matches || []; s.matches.push(m);
   saveState();
   refreshStage(stageId);
@@ -1105,7 +1112,7 @@ function refreshStage(stageId){
   if(s.format === 'wc'){
     const b = $('stage-body-' + stageId);
     if(b) b.innerHTML = wcStageBodyHtml(t, s);
-  } else if(s.format === 'single' || s.format === 'double'){
+  } else if(isBracketFormat(s.format)){
     const b = $('stage-bracket-' + stageId);
     if(b) b.innerHTML = bracketHtml(t, s);
     const st = $('stage-standings-' + stageId);
@@ -1127,7 +1134,19 @@ function refreshStage(stageId){
 function generateMatches(stageId){
   const t = findStageOwner(stageId);
   const s = findStage(stageId);
-  const gen = buildGeneratedMatches(t, s);
+  if(s.format === 'double'){
+    const def = (t.teamIds || []).length || 16;
+    promptDialog('生成双败对阵', '请输入参赛队伍数量（2–64）。将生成空白框图，队伍可在「快捷填入」中依次填入；非 2 的幂时按上一级 2 的幂生成（多余位置为轮空）：', def, value => {
+      const n = parseInt(value, 10);
+      if(!n || n < 2 || n > 64){ toast('请输入 2–64 之间的队伍数量', 'err'); return; }
+      applyGeneratedMatches(stageId, buildDoubleBracket(new Array(n).fill('')));
+    });
+    return;
+  }
+  applyGeneratedMatches(stageId, buildGeneratedMatches(t, s));
+}
+function applyGeneratedMatches(stageId, gen){
+  const s = findStage(stageId); if(!s) return;
   if(gen.length === 0){ toast('无可生成的对阵（请先选择参赛队伍或分组）', 'err'); return; }
   const doGen = () => {
     s.matches = gen;
@@ -1141,6 +1160,7 @@ function generateMatches(stageId){
 function buildGeneratedMatches(t, s){
   if(s.format === 'single') return buildSingleBracket(t.teamIds || []);
   if(s.format === 'double') return buildDoubleBracket(t.teamIds || []);
+  if(s.format === 'tiered-double') return buildTieredDoubleBracket();
   const out = [];
   const mk = (a, b, round, groupId, bracket) => out.push({ id: uid('m'), round: round, groupId: groupId || null, bracket: bracket || 'winners', teamAId: a || '', teamBId: b || '', scoreA: '', scoreB: '', winnerId: '', note: '' });
   if(s.format === 'group'){
@@ -1290,6 +1310,46 @@ function buildDoubleBracket(teamIds){
   propagateByes(wr[0], all);
   return all;
 }
+function isBracketFormat(f){ return f === 'single' || f === 'double' || f === 'tiered-double'; }
+
+/* 分级双败（最多 10 队）：
+   种子 1-2 → 胜者组第2轮；种子 3-6 → 胜者组第1轮；种子 7-10 → 败者组第1轮 */
+function buildTieredDoubleBracket(){
+  const all = [];
+  const mk = (round, bracket) => { const m = mkBracketMatch(round, bracket, '', ''); all.push(m); return m; };
+  // 胜者组
+  const wb1 = [mk('胜者组第1轮', 'winners'), mk('胜者组第1轮', 'winners')];
+  const wb2 = [mk('胜者组第2轮', 'winners'), mk('胜者组第2轮', 'winners')];
+  const wbf = mk('胜者组决赛', 'winners');
+  // 胜者组第1轮胜者进入第2轮下位（B）；种子 1-2 直接坐镇上位（A）
+  wb1[0].nextId = wb2[0].id; wb1[0].nextSlot = 'B';
+  wb1[1].nextId = wb2[1].id; wb1[1].nextSlot = 'B';
+  wb2[0].nextId = wbf.id; wb2[0].nextSlot = 'A';
+  wb2[1].nextId = wbf.id; wb2[1].nextSlot = 'B';
+  // 败者组
+  const lb1 = [mk('败者组第1轮', 'losers'), mk('败者组第1轮', 'losers')];
+  const lb2 = [mk('败者组第2轮', 'losers'), mk('败者组第2轮', 'losers')];
+  const lb3 = [mk('败者组第3轮', 'losers'), mk('败者组第3轮', 'losers')];
+  const lb4 = mk('败者组第4轮', 'losers');
+  const lb5 = mk('败者组决赛', 'losers');
+  lb1[0].nextId = lb2[0].id; lb1[0].nextSlot = 'B';
+  lb1[1].nextId = lb2[1].id; lb1[1].nextSlot = 'B';
+  wb1[0].loserNextId = lb2[0].id; wb1[0].loserNextSlot = 'A';
+  wb1[1].loserNextId = lb2[1].id; wb1[1].loserNextSlot = 'A';
+  lb2[0].nextId = lb3[0].id; lb2[0].nextSlot = 'B';
+  lb2[1].nextId = lb3[1].id; lb2[1].nextSlot = 'B';
+  wb2[0].loserNextId = lb3[0].id; wb2[0].loserNextSlot = 'A';
+  wb2[1].loserNextId = lb3[1].id; wb2[1].loserNextSlot = 'A';
+  lb3[0].nextId = lb4.id; lb3[0].nextSlot = 'A';
+  lb3[1].nextId = lb4.id; lb3[1].nextSlot = 'B';
+  lb4.nextId = lb5.id; lb4.nextSlot = 'B';
+  wbf.loserNextId = lb5.id; wbf.loserNextSlot = 'A';
+  // 总决赛
+  const gf = mk('总决赛', 'final');
+  wbf.nextId = gf.id; wbf.nextSlot = 'A';
+  lb5.nextId = gf.id; lb5.nextSlot = 'B';
+  return all;
+}
 function advanceFromMatch(s, m){
   const w = matchWinner(m);
   const loser = (w && w !== 'draw') ? (w === m.teamAId ? m.teamBId : m.teamAId) : '';
@@ -1307,7 +1367,7 @@ function advanceFromMatch(s, m){
 }
 function bracketHtml(t, s){
   const ms = s.matches || [];
-  if(s.format === 'double'){
+  if(s.format === 'double' || s.format === 'tiered-double'){
     const win = ms.filter(m => m.bracket === 'winners');
     const los = ms.filter(m => m.bracket === 'losers');
     const fin = ms.filter(m => m.bracket === 'final');
@@ -2036,6 +2096,7 @@ function renderTeamHistory(c){
     cat: (a,b) => ((typeOrder[a.t.type] != null ? typeOrder[a.t.type] : 9) - (typeOrder[b.t.type] != null ? typeOrder[b.t.type] : 9)) ||
       subtypeLabel(a.t.subtype).localeCompare(subtypeLabel(b.t.subtype), 'zh'),
     season: (a,b) => (sYear(a.t) - sYear(b.t)) || sName(a.t).localeCompare(sName(b.t), 'zh'),
+    date: (a,b) => String(a.t.date || '9999').localeCompare(String(b.t.date || '9999')),
     rank: (a,b) => ((a.rank == null ? 1e9 : a.rank) - (b.rank == null ? 1e9 : b.rank))
   };
   hist.sort((a,b) => {
@@ -2048,7 +2109,7 @@ function renderTeamHistory(c){
   } else {
     let html = '<div class="table-wrap"><table><thead><tr>' +
       teamHistoryTh('赛事','name') + teamHistoryTh('分类','cat') + teamHistoryTh('赛年','season') +
-      '<th>日期</th>' + (hasRel ? '<th>队名</th>' : '') + teamHistoryTh('最终名次','rank') +
+      teamHistoryTh('日期','date') + (hasRel ? '<th>队名</th>' : '') + teamHistoryTh('最终名次','rank') +
       '</tr></thead><tbody>';
     hist.forEach(h => {
       html += '<tr><td><a class="clickable" onclick="openTournament(\'' + h.t.id + '\')">' + esc(h.t.name) + '</a></td>' +
@@ -2208,6 +2269,22 @@ function confirmTeamPicker(){
    ============================================================ */
 function openModal(id){ $(id).classList.add('open'); }
 function closeModal(id){ $(id).classList.remove('open'); }
+let promptCallback = null;
+function promptDialog(title, message, defaultValue, cb){
+  $('prompt-title').textContent = title;
+  $('prompt-message').textContent = message;
+  $('prompt-input').value = (defaultValue == null) ? '' : String(defaultValue);
+  promptCallback = cb;
+  $('prompt-ok').onclick = () => {
+    const v = $('prompt-input').value;
+    const fn = promptCallback;
+    promptCallback = null;
+    closeModal('modal-prompt');
+    if(fn) fn(v);
+  };
+  openModal('modal-prompt');
+  setTimeout(() => { const i = $('prompt-input'); if(i){ i.focus(); i.select(); } }, 30);
+}
 function confirmDialog(title, message, cb){
   $('confirm-title').textContent = title;
   $('confirm-message').textContent = message;
