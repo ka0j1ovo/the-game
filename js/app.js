@@ -47,10 +47,12 @@ let editingClubId = null;
 let editingSeasonId = null;
 let seasonCopyFrom = null;      // 新建赛年时复制的源赛年 id
 let tournamentCopyFrom = null;  // 新建赛事时复制的源赛事 id
-let filters = { clubCategory: 'all', tournamentType: 'all' };
+let filters = { clubCategory: 'all', tournamentType: 'all', tournamentQuery: '' };
 let teamPicker = null;       // { target, selected:Set }
 let tForm = null;            // 新建赛事临时表单 { formats:[], teams:Set }
 let quickFill = { stageId: '', queue: [] };  // 快捷填入：当前阶段与待填队伍队列
+let pointsSort = {};         // 积分表排序：'ctx:ownerId' -> 排序列栈（最近的在前）
+let teamHistorySort = [];    // 队伍历届成绩排序栈（最近的在前）
 let confirmCallback = null;
 
 /* ---------------- 工具 ---------------- */
@@ -474,14 +476,28 @@ function pointsTableHtml(ctx, ownerId, p, title){
   }
   const totals = computePointsTotals(p);
   const totalMap = {}; totals.forEach(r => totalMap[r.clubId] = r.total);
-  html += '<div class="table-wrap"><table><thead><tr><th>排名</th><th>队伍</th>';
-  p.stations.forEach(st => {
-    html += '<th><div style="display:flex;align-items:center;gap:4px">' + esc(st.name) +
-      '<span class="clickable" title="删除该分站" onclick="removeStation(\'' + ctx + '\',\'' + ownerId + '\',\'' + st.id + '\')">×</span></div></th>';
+  const skey = ctx + ':' + ownerId;
+  const keys = pointsSort[skey] || [];
+  const sortMark = k => { const i = keys.indexOf(k); return i < 0 ? '' : '<span class="sort-mark">' + (i + 1) + '</span>'; };
+  const rows = p.clubIds.slice();
+  rows.sort((a,b) => {
+    for(const k of keys){
+      let r;
+      if(k === 'team') r = clubName(a).localeCompare(clubName(b), 'zh');
+      else r = pointsSortValue(p, b, k, totalMap) - pointsSortValue(p, a, k, totalMap);
+      if(r) return r;
+    }
+    return (totalMap[b] || 0) - (totalMap[a] || 0) || clubName(a).localeCompare(clubName(b), 'zh');
   });
-  html += '<th>总分</th><th style="width:40px"></th></tr></thead><tbody>';
-  p.clubIds.forEach(cid => {
-    const rowIdx = p.clubIds.indexOf(cid);
+  html += '<div class="table-wrap"><table><thead><tr><th>排名</th>' +
+    '<th class="sort-th" title="点击排序" onclick="togglePointsSort(\'' + ctx + '\',\'' + ownerId + '\',\'team\')">队伍' + sortMark('team') + '</th>';
+  p.stations.forEach(st => {
+    html += '<th class="sort-th" title="点击按该分站积分排序" onclick="togglePointsSort(\'' + ctx + '\',\'' + ownerId + '\',\'st:' + st.id + '\')">' + esc(st.name) + sortMark('st:' + st.id) +
+      ' <span class="clickable" title="删除该分站" onclick="event.stopPropagation();removeStation(\'' + ctx + '\',\'' + ownerId + '\',\'' + st.id + '\')">×</span></th>';
+  });
+  html += '<th class="sort-th" title="点击按总分排序" onclick="togglePointsSort(\'' + ctx + '\',\'' + ownerId + '\',\'total\')">总分' + sortMark('total') + '</th>' +
+    '<th style="width:40px"></th></tr></thead><tbody>';
+  rows.forEach(cid => {
     const total = totalMap[cid] || 0;
     html += '<tr><td>' + rankHtml(totals.findIndex(r => r.clubId === cid) + 1) + '</td><td>' + teamSwatch(cid, true) + '</td>';
     p.stations.forEach(st => {
@@ -501,6 +517,22 @@ function pointsTableHtml(ctx, ownerId, p, title){
     '<button class="btn btn-sm" onclick="openTeamPicker(\'' + ctx + '-points:' + ownerId + '\')">+ 添加队伍</button>' +
     '</div>';
   return html;
+}
+function pointsSortValue(p, clubId, key, totalMap){
+  if(key === 'total') return totalMap[clubId] || 0;
+  if(key.indexOf('st:') === 0){
+    const sid = key.slice(3);
+    return num(p.data && p.data[clubId] && p.data[clubId][sid]);
+  }
+  return 0;
+}
+function togglePointsSort(ctx, ownerId, key){
+  const skey = ctx + ':' + ownerId;
+  const arr = (pointsSort[skey] || []).slice();
+  const i = arr.indexOf(key);
+  if(i >= 0) arr.splice(i, 1); else arr.unshift(key);
+  pointsSort[skey] = arr;
+  renderPointsFor(ctx, ownerId);
 }
 function getPointsObj(ctx, ownerId){ return ctx === 'season' ? getSeason(ownerId).points : getTournament(ownerId).points; }
 function renderPointsFor(ctx, ownerId){
@@ -555,9 +587,22 @@ function renderTournaments(){
   $('tournament-filters').innerHTML = types.map(c =>
     '<span class="filter-chip' + (filters.tournamentType === c[0] ? ' active' : '') + '" onclick="setTournamentFilter(\'' + c[0] + '\')">' + c[1] + '</span>'
   ).join('');
-
+  const si = $('tournament-search');
+  if(si) si.value = filters.tournamentQuery || '';
+  renderTournamentList();
+}
+function tournamentSearch(q){ filters.tournamentQuery = q; renderTournamentList(); }
+function renderTournamentList(){
   let list = state.tournaments.slice();
   if(filters.tournamentType !== 'all') list = list.filter(t => t.type === filters.tournamentType);
+  const q = (filters.tournamentQuery || '').trim().toLowerCase();
+  if(q){
+    list = list.filter(t => {
+      const hay = ((t.name || '') + ' ' + (TYPE_LABELS[t.type] || '') + ' ' + subtypeLabel(t.subtype) + ' ' +
+        (t.seasonId ? ((getSeason(t.seasonId) || {}).name || '') : '') + ' ' + (t.date || '')).toLowerCase();
+      return hay.indexOf(q) >= 0;
+    });
+  }
   const typeOrder = { secondary: 0, hupl: 1, international: 2 };
   list.sort((a,b) => (typeOrder[a.type] - typeOrder[b.type]) || a.name.localeCompare(b.name, 'zh'));
 
@@ -597,15 +642,37 @@ function openTournamentModal(){
   $('t-type').value = 'secondary';
   $('t-date').value = '';
   $('t-team-search').value = '';
+  tForm.teamQuery = '';
   $('t-copy').innerHTML = '<option value="">（不复制）</option>' +
     state.tournaments.slice().sort((a,b) => (b.createdAt || 0) - (a.createdAt || 0))
       .map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
   $('t-copy').value = '';
+  $('t-copy-search').value = '';
   onTournamentTypeChange();
   renderTournamentFormatChips();
   renderTournamentFormatOrder();
   renderTournamentTeamChips();
   openModal('modal-tournament');
+}
+function tCopySearch(q){
+  const sel = $('t-copy');
+  const cur = sel.value || '';
+  const qq = (q || '').trim().toLowerCase();
+  const list = state.tournaments.slice().sort((a,b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .filter(t => {
+      if(!qq) return true;
+      const seasonName = t.seasonId ? ((getSeason(t.seasonId) || {}).name || '') : '';
+      return ((t.name || '') + ' ' + seasonName + ' ' + subtypeLabel(t.subtype)).toLowerCase().indexOf(qq) >= 0;
+    });
+  let opts = '<option value="">（不复制）</option>' +
+    list.map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
+  // 已选中的赛事即使被搜索过滤掉也保留，避免保存时复制的来源与界面不一致
+  if(cur && !list.some(t => t.id === cur)){
+    const ct = getTournament(cur);
+    if(ct) opts += '<option value="' + ct.id + '">' + esc(ct.name) + '</option>';
+  }
+  sel.innerHTML = opts;
+  if(cur && getTournament(cur)) sel.value = cur;
 }
 function onTournamentCopyChange(){
   const id = $('t-copy').value;
@@ -621,6 +688,8 @@ function onTournamentCopyChange(){
   $('t-date').value = t.date || '';
   tForm.formats = (t.stages || []).map(s => s.format).filter(Boolean);
   tForm.teams = new Set(t.teamIds || []);
+  tForm.teamQuery = '';
+  $('t-team-search').value = '';
   renderTournamentFormatChips();
   renderTournamentFormatOrder();
   renderTournamentTeamChips();
@@ -670,6 +739,13 @@ function renderTournamentTeamChips(){
   ).join('') : '<span class="muted">没有匹配的队伍</span>';
 }
 function tTeamSearch(q){ tForm.teamQuery = q; renderTournamentTeamChips(); }
+function tClearTeams(){
+  if(!tForm) return;
+  if(!tForm.teams.size){ toast('当前没有已选队伍'); return; }
+  tForm.teams.clear();
+  renderTournamentTeamChips();
+  toast('已清空参赛队伍');
+}
 function toggleTeamChip(id){ if(tForm.teams.has(id)) tForm.teams.delete(id); else tForm.teams.add(id); renderTournamentTeamChips(); }
 
 function saveTournament(){
@@ -1189,7 +1265,8 @@ function buildDoubleBracket(teamIds){
 
   // WB1 败者 → 败者组第1轮（两两配对）
   wr[0].forEach((m, j) => { m.loserNextId = lb[0][Math.floor(j / 2)].id; m.loserNextSlot = (j % 2 === 0) ? 'A' : 'B'; });
-  // WB_r (r≥2) 败者 → 败者组第 (2r-2) 轮（A 位）
+  // WB_r (r≥2) 败者 → 败者组第 (2r-2) 轮的上位（A 位）；
+  // 败者组上一轮晋级者固定进入下位（B 位），即「胜者组掉下来的在上，败者组晋级者在下」
   for(let r = 2; r <= W; r++){
     const lbIdx = 2 * r - 3;
     const src = wr[r - 1], dst = lb[lbIdx];
@@ -1238,7 +1315,7 @@ function bracketHtml(t, s){
       '<div class="bracket-double">' +
         '<div class="bracket-double-left">' +
           '<div class="bracket-zone"><h3>胜者组</h3>' + bracketColumnsHtml(t, s, win) + '</div>' +
-          '<div class="bracket-zone"><h3>败者组</h3>' + bracketColumnsHtml(t, s, los) + '</div>' +
+          '<div class="bracket-zone"><h3>败者组</h3>' + bracketColumnsHtml(t, s, los, true) + '</div>' +
         '</div>' +
         (fin.length ? '<div class="bracket-zone bracket-double-final"><h3>总决赛</h3>' + bracketColumnsHtml(t, s, fin) + '</div>' : '') +
       '</div>' +
@@ -1246,7 +1323,7 @@ function bracketHtml(t, s){
   }
   return '<div class="bracket-wrap" data-wrap="' + s.id + '"><div class="bracket-zone">' + bracketColumnsHtml(t, s, ms) + '</div></div>';
 }
-function bracketColumnsHtml(t, s, ms){
+function bracketColumnsHtml(t, s, ms, withGap){
   if(!ms.length) return '<div class="empty" style="padding:18px">暂无对局，点击「生成对阵」创建 Bracket。</div>';
   const cols = [], idx = {};
   ms.forEach(m => {
@@ -1255,6 +1332,8 @@ function bracketColumnsHtml(t, s, ms){
     cols[idx[r]].matches.push(m);
   });
   let html = '<div class="bracket">';
+  // 败者组整体右移一列：胜者组掉下来的队伍连线向右下行进，不会与败者组内部连线交叉
+  if(withGap) html += '<div class="bracket-col bracket-col-gap"></div>';
   cols.forEach(col => {
     html += '<div class="bracket-col"><div class="bracket-col-label">' + esc(col.label) + '</div>' +
       col.matches.map(m => bracketMatchHtml(t, s, m)).join('') + '</div>';
@@ -1820,6 +1899,7 @@ function renderTeam(){
   $('team-meta').innerHTML = meta;
 
   renderTeamRelated(c);
+  renderTeamRankTrend(c);
   renderTeamSeasonFilter(c);
   renderTeamHistory(c);
   renderTeamH2h(c);
@@ -1855,6 +1935,65 @@ function renderTeamRelated(c){
   el.innerHTML = html;
 }
 function openLinkTeamPicker(){ openTeamPicker('link:' + currentClubId); }
+
+/* HUPL 年度排名走势：横轴赛年，纵轴排名（1 在上），相邻年份有成绩则连线 */
+function renderTeamRankTrend(c){
+  const el = $('team-rank-trend');
+  if(!el) return;
+  const seasons = state.seasons.slice().sort((a,b) => (a.year || 0) - (b.year || 0) || String(a.name || '').localeCompare(String(b.name || ''), 'zh'));
+  if(seasons.length === 0){
+    el.innerHTML = '<div class="empty">暂无赛年数据。创建赛年并填写 HUPL 赛年积分表后，这里会显示该队伍的年度排名走势。</div>';
+    return;
+  }
+  const data = seasons.map(s => {
+    const p = s.points;
+    if(!p || !(p.clubIds || []).length) return null;
+    const totals = computePointsTotals(p);
+    const idx = totals.findIndex(r => r.clubId === c.id);
+    if(idx < 0) return null;
+    return { rank: idx + 1, points: totals[idx].total };
+  });
+  const ranks = data.filter(Boolean).map(d => d.rank);
+  const maxRank = Math.max(13, ranks.length ? Math.max.apply(null, ranks) : 1);
+  const W = Math.max(620, 120 + seasons.length * 104), H = 360;
+  const padL = 60, padR = 36, padT = 32, padB = 62;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const X = i => seasons.length === 1 ? padL + iw / 2 : padL + iw * i / (seasons.length - 1);
+  const Y = r => padT + ih * (r - 1) / Math.max(1, maxRank - 1);
+  let svg = '<svg class="trend-chart" viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-width:' + W + 'px;height:auto;display:block">';
+  // 横向网格与排名刻度
+  for(let r = 1; r <= maxRank; r++){
+    const y = Y(r);
+    svg += '<line x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + y.toFixed(1) + '" stroke="#e3eaf3" stroke-width="1"/>';
+    svg += '<text x="' + (padL - 12) + '" y="' + (y + 4).toFixed(1) + '" text-anchor="end" font-size="12" fill="#5b6b7c">' + r + '</text>';
+  }
+  svg += '<line x1="' + padL + '" y1="' + (padT + ih) + '" x2="' + (W - padR) + '" y2="' + (padT + ih) + '" stroke="#c7d2e0" stroke-width="1"/>';
+  const yMid = padT + ih / 2;
+  svg += '<text x="14" y="' + yMid + '" text-anchor="middle" font-size="12" fill="#5b6b7c" transform="rotate(-90 14 ' + yMid + ')">排名</text>';
+  // 横轴赛年
+  seasons.forEach((s, i) => {
+    svg += '<text x="' + X(i).toFixed(1) + '" y="' + (H - 34) + '" text-anchor="middle" font-size="12" fill="#5b6b7c">' + esc(s.name) + '</text>';
+  });
+  // 折线：相邻两个年份都有成绩才连线
+  for(let i = 0; i < data.length - 1; i++){
+    const a = data[i], b = data[i + 1];
+    if(!a || !b) continue;
+    svg += '<line x1="' + X(i).toFixed(1) + '" y1="' + Y(a.rank).toFixed(1) + '" x2="' + X(i + 1).toFixed(1) + '" y2="' + Y(b.rank).toFixed(1) +
+      '" stroke="#1e3a5f" stroke-width="2"/>';
+  }
+  // 成绩点与标注
+  data.forEach((d, i) => {
+    if(!d) return;
+    const x = X(i), y = Y(d.rank);
+    svg += '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="5" fill="#c9a227" stroke="#1e3a5f" stroke-width="1.5">' +
+      '<title>' + esc(seasons[i].name + '：第' + d.rank + '名 · ' + d.points + '分') + '</title></circle>';
+    const label = '第' + d.rank + '名 · ' + d.points + '分';
+    const ly = (d.rank > 1) ? y - 12 : y + 22;
+    svg += '<text x="' + x.toFixed(1) + '" y="' + ly.toFixed(1) + '" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1e3a5f">' + esc(label) + '</text>';
+  });
+  svg += '</svg>';
+  el.innerHTML = svg + '<div class="muted" style="margin-top:6px">纵轴为 HUPL 赛年积分榜排名（1 在上，13 在下）；标注为当年排名与积分。未进入当年积分榜的赛年保留横轴刻度、不画点。</div>';
+}
 function unlinkTeam(id){
   const c = getClub(currentClubId); if(!c) return;
   c.relatedIds = (c.relatedIds || []).filter(x => x !== id);
@@ -1889,12 +2028,28 @@ function renderTeamHistory(c){
     const rankRow = (t.finalStandings || []).find(r => group.includes(r.clubId));
     hist.push({ t: t, members: members, rank: rankRow ? rankRow.rank : null });
   });
-  hist.sort((a,b) => (b.t.createdAt || 0) - (a.t.createdAt || 0));
+  const typeOrder = { secondary: 0, hupl: 1, international: 2 };
+  const sYear = t => t.seasonId ? ((getSeason(t.seasonId) || {}).year || 0) : 0;
+  const sName = t => t.seasonId ? ((getSeason(t.seasonId) || {}).name || '') : '';
+  const cmpFns = {
+    name: (a,b) => (a.t.name || '').localeCompare(b.t.name || '', 'zh'),
+    cat: (a,b) => ((typeOrder[a.t.type] != null ? typeOrder[a.t.type] : 9) - (typeOrder[b.t.type] != null ? typeOrder[b.t.type] : 9)) ||
+      subtypeLabel(a.t.subtype).localeCompare(subtypeLabel(b.t.subtype), 'zh'),
+    season: (a,b) => (sYear(a.t) - sYear(b.t)) || sName(a.t).localeCompare(sName(b.t), 'zh'),
+    rank: (a,b) => ((a.rank == null ? 1e9 : a.rank) - (b.rank == null ? 1e9 : b.rank))
+  };
+  hist.sort((a,b) => {
+    for(const k of teamHistorySort){ const r = cmpFns[k](a,b); if(r) return r; }
+    return (b.t.createdAt || 0) - (a.t.createdAt || 0);
+  });
   const hEl = $('team-history');
   if(hist.length === 0){
     hEl.innerHTML = '<div class="empty">该赛年暂无参赛记录。</div>';
   } else {
-    let html = '<div class="table-wrap"><table><thead><tr><th>赛事</th><th>分类</th><th>赛年</th><th>日期</th>' + (hasRel ? '<th>队名</th>' : '') + '<th>最终名次</th></tr></thead><tbody>';
+    let html = '<div class="table-wrap"><table><thead><tr>' +
+      teamHistoryTh('赛事','name') + teamHistoryTh('分类','cat') + teamHistoryTh('赛年','season') +
+      '<th>日期</th>' + (hasRel ? '<th>队名</th>' : '') + teamHistoryTh('最终名次','rank') +
+      '</tr></thead><tbody>';
     hist.forEach(h => {
       html += '<tr><td><a class="clickable" onclick="openTournament(\'' + h.t.id + '\')">' + esc(h.t.name) + '</a></td>' +
         '<td>' + typeBadge(h.t.type) + ' ' + esc(subtypeLabel(h.t.subtype)) + '</td>' +
@@ -1906,6 +2061,16 @@ function renderTeamHistory(c){
     html += '</tbody></table></div>';
     hEl.innerHTML = html;
   }
+}
+function teamHistoryTh(label, key){
+  const i = teamHistorySort.indexOf(key);
+  return '<th class="sort-th" title="点击排序（可多选，后选为主）" onclick="toggleTeamHistorySort(\'' + key + '\')">' + label +
+    (i >= 0 ? '<span class="sort-mark">' + (i + 1) + '</span>' : '') + '</th>';
+}
+function toggleTeamHistorySort(key){
+  const i = teamHistorySort.indexOf(key);
+  if(i >= 0) teamHistorySort.splice(i, 1); else teamHistorySort.unshift(key);
+  renderTeamHistory(getClub(currentClubId));
 }
 function renderTeamH2h(c){
   const gset = new Set(relatedIdsOf(c));

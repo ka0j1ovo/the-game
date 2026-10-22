@@ -87,6 +87,9 @@
       <h1>赛事</h1>
       <button class="btn btn-primary" onclick="openTournamentModal()">+ 新建赛事</button>
     </div>
+    <div class="list-search">
+      <input type="text" id="tournament-search" placeholder="搜索赛事名称 / 分类 / 赛年…" autocomplete="off" oninput="tournamentSearch(this.value)">
+    </div>
     <div class="filters" id="tournament-filters"></div>
     <div id="tournament-list"></div>
   </section>
@@ -124,6 +127,10 @@
     <div class="section">
       <h2>关联队伍</h2>
       <div id="team-related"></div>
+    </div>
+    <div class="section">
+      <h2>HUPL 年度排名走势</h2>
+      <div id="team-rank-trend"></div>
     </div>
     <div id="team-season-filter"></div>
     <div class="section">
@@ -236,6 +243,7 @@
     <h3>新建赛事</h3>
     <div class="form-grid">
       <label class="full">复制已有赛事（可选）
+        <input type="text" id="t-copy-search" class="pick-search" placeholder="搜索赛事名称 / 赛年…" autocomplete="off" oninput="tCopySearch(this.value)">
         <select id="t-copy" onchange="onTournamentCopyChange()"></select>
       </label>
       <label>赛事名称
@@ -266,7 +274,10 @@
         <div class="chips" id="t-formats-order"></div>
       </label>
       <label class="full">参赛队伍
-        <input type="text" id="t-team-search" class="pick-search" placeholder="搜索队伍名称 / 简称…" oninput="tTeamSearch(this.value)">
+        <div class="row-inline">
+          <input type="text" id="t-team-search" class="pick-search" style="margin-bottom:0" placeholder="搜索队伍名称 / 简称…" oninput="tTeamSearch(this.value)">
+          <button type="button" class="btn btn-sm" onclick="tClearTeams()">一键清空</button>
+        </div>
         <div class="team-pick" id="t-teams"></div>
       </label>
     </div>
