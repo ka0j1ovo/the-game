@@ -53,6 +53,7 @@ let tForm = null;            // 新建赛事临时表单 { formats:[], teams:Set
 let quickFill = { stageId: '', queue: [] };  // 快捷填入：当前阶段与待填队伍队列
 let pointsSort = {};         // 积分表排序：'ctx:ownerId' -> 排序列栈（最近的在前）
 let teamHistorySort = [];    // 队伍历届成绩排序栈（最近的在前）
+let tournamentSort = [];     // 赛事列表排序栈（最近的在前；首页与赛事页共用）
 let confirmCallback = null;
 
 /* ---------------- 工具 ---------------- */
@@ -189,14 +190,15 @@ function renderDashboard(){
     html += '</div>';
   }
 
-  // 最近赛事
+  // 最近赛事（同一张可排序表格，最多 6 条；完整列表见「赛事」页）
   const recent = state.tournaments.slice().sort((a,b) => (b.createdAt||0) - (a.createdAt||0)).slice(0, 6);
   html += '<div class="section"><h2>最近赛事</h2>';
   if(recent.length === 0){
     html += '<div class="empty">暂无赛事。</div>';
   } else {
-    html += '<div class="cards">' + recent.map(tournamentCard).join('') + '</div>';
+    html += tournamentTableHtml(sortTournamentList(recent));
   }
+  html += '<p class="muted" style="margin-top:8px"><a class="clickable" onclick="go(\'tournaments\')">查看全部赛事 →</a></p>';
   html += '</div>';
   $('view-dashboard').innerHTML = html;
 }
@@ -603,16 +605,59 @@ function renderTournamentList(){
       return hay.indexOf(q) >= 0;
     });
   }
-  const typeOrder = { secondary: 0, hupl: 1, international: 2 };
-  list.sort((a,b) => (typeOrder[a.type] - typeOrder[b.type]) || a.name.localeCompare(b.name, 'zh'));
+  list.sort((a,b) => (TOURNAMENT_TYPE_ORDER[a.type] - TOURNAMENT_TYPE_ORDER[b.type]) || a.name.localeCompare(b.name, 'zh'));
+  list = sortTournamentList(list);
 
   const el = $('tournament-list');
   if(list.length === 0){
     el.innerHTML = '<div class="empty">暂无赛事。点击「新建赛事」开始。</div>';
     return;
   }
+  el.innerHTML = tournamentTableHtml(list);
+}
+
+/* ---- 赛事表格排序（首页「最近赛事」与赛事页共用） ---- */
+const TOURNAMENT_TYPE_ORDER = { secondary: 0, hupl: 1, international: 2 };
+function tournamentSortVal(t, key){
+  if(key === 'name') return (t.name || '').toLowerCase();
+  if(key === 'type'){ const i = TOURNAMENT_TYPE_ORDER[t.type]; return i == null ? 9 : i; }
+  if(key === 'subtype') return subtypeLabel(t.subtype).toLowerCase();
+  if(key === 'season'){
+    const s = t.seasonId ? (getSeason(t.seasonId) || {}) : {};
+    return String(s.year || 9999) + '|' + (s.name || '').toLowerCase();
+  }
+  if(key === 'date') return String(t.date || '9999');
+  if(key === 'format') return (t.stages || []).map(s => FORMAT_LABELS[s.format] || s.format).join(' + ').toLowerCase();
+  if(key === 'teams') return (t.teamIds || []).length;
+  return '';
+}
+function sortTournamentList(list){
+  if(tournamentSort.length === 0) return list;
+  return list.slice().sort((a,b) => {
+    for(const key of tournamentSort){
+      const va = tournamentSortVal(a, key), vb = tournamentSortVal(b, key);
+      const r = (typeof va === 'number' && typeof vb === 'number') ? (va - vb) : String(va).localeCompare(String(vb), 'zh');
+      if(r) return r;
+    }
+    return 0;
+  });
+}
+function tournamentSortTh(label, key){
+  const i = tournamentSort.indexOf(key);
+  return '<th class="sort-th" title="点击排序（可多选，后选为主）" onclick="toggleTournamentSort(\'' + key + '\')">' + label +
+    (i >= 0 ? '<span class="sort-mark">' + (i + 1) + '</span>' : '') + '</th>';
+}
+function toggleTournamentSort(key){
+  const i = tournamentSort.indexOf(key);
+  if(i >= 0) tournamentSort.splice(i, 1); else tournamentSort.unshift(key);
+  if(view === 'dashboard') renderDashboard(); else renderTournamentList();
+}
+function tournamentTableHtml(list){
   let html = '<div class="table-wrap"><table><thead><tr>' +
-    '<th>赛事</th><th>分类</th><th>子类型</th><th>赛年</th><th>日期</th><th>赛制</th><th>队伍数</th><th style="width:70px">操作</th></tr></thead><tbody>';
+    tournamentSortTh('赛事','name') + tournamentSortTh('分类','type') + tournamentSortTh('子类型','subtype') +
+    tournamentSortTh('赛年','season') + tournamentSortTh('日期','date') +
+    tournamentSortTh('赛制','format') + tournamentSortTh('队伍数','teams') +
+    '<th style="width:70px">操作</th></tr></thead><tbody>';
   list.forEach(t => {
     const fmts = (t.stages || []).map(s => FORMAT_LABELS[s.format] || s.format).join(' + ') || '—';
     html += '<tr>' +
@@ -627,7 +672,7 @@ function renderTournamentList(){
       '</tr>';
   });
   html += '</tbody></table></div>';
-  el.innerHTML = html;
+  return html;
 }
 function setTournamentFilter(v){ filters.tournamentType = v; renderTournaments(); }
 function openTournament(id){ currentTournamentId = id; go('tournament-detail'); }
