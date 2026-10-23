@@ -618,6 +618,20 @@ function renderTournamentList(){
 
 /* ---- 赛事表格排序（首页「最近赛事」与赛事页共用） ---- */
 const TOURNAMENT_TYPE_ORDER = { secondary: 0, hupl: 1, international: 2 };
+const TOURNAMENT_SORT_KEYS = ['name', 'type', 'subtype', 'season', 'date', 'teams'];
+function tournamentTopFourHtml(t){
+  const top = (t.finalStandings || [])
+    .filter(r => r && r.clubId)
+    .slice().sort((a,b) => (num(a.rank) || 999) - (num(b.rank) || 999))
+    .slice(0, 4);
+  if(top.length === 0) return '<span class="muted">—</span>';
+  return '<div class="top4">' + top.map(r => {
+    const c = getClub(r.clubId);
+    const label = c ? (c.shortName || c.name) : '（已删除队伍）';
+    return '<div class="top4-row"><span class="top4-rank top4-rank-' + (num(r.rank) || 'x') + '">' + (num(r.rank) || '–') + '</span>' +
+      '<span class="team-swatch"><span class="dot" style="background:' + clubColor(r.clubId) + '"></span>' + esc(label) + '</span></div>';
+  }).join('') + '</div>';
+}
 function tournamentSortVal(t, key){
   if(key === 'name') return (t.name || '').toLowerCase();
   if(key === 'type'){ const i = TOURNAMENT_TYPE_ORDER[t.type]; return i == null ? 9 : i; }
@@ -627,11 +641,12 @@ function tournamentSortVal(t, key){
     return String(s.year || 9999) + '|' + (s.name || '').toLowerCase();
   }
   if(key === 'date') return String(t.date || '9999');
-  if(key === 'format') return (t.stages || []).map(s => FORMAT_LABELS[s.format] || s.format).join(' + ').toLowerCase();
   if(key === 'teams') return (t.teamIds || []).length;
   return '';
 }
 function sortTournamentList(list){
+  // 丢弃已下线列（如「赛制」）残留的排序键
+  tournamentSort = tournamentSort.filter(k => TOURNAMENT_SORT_KEYS.indexOf(k) >= 0);
   if(tournamentSort.length === 0) return list;
   return list.slice().sort((a,b) => {
     for(const key of tournamentSort){
@@ -656,17 +671,16 @@ function tournamentTableHtml(list){
   let html = '<div class="table-wrap"><table><thead><tr>' +
     tournamentSortTh('赛事','name') + tournamentSortTh('分类','type') + tournamentSortTh('子类型','subtype') +
     tournamentSortTh('赛年','season') + tournamentSortTh('日期','date') +
-    tournamentSortTh('赛制','format') + tournamentSortTh('队伍数','teams') +
+    '<th>四强队伍</th>' + tournamentSortTh('队伍数','teams') +
     '<th style="width:70px">操作</th></tr></thead><tbody>';
   list.forEach(t => {
-    const fmts = (t.stages || []).map(s => FORMAT_LABELS[s.format] || s.format).join(' + ') || '—';
     html += '<tr>' +
       '<td><a class="clickable" onclick="openTournament(\'' + t.id + '\')">' + esc(t.name) + '</a></td>' +
       '<td>' + typeBadge(t.type) + '</td>' +
       '<td>' + esc(subtypeLabel(t.subtype)) + '</td>' +
       '<td>' + (t.seasonId ? '<a class="clickable" onclick="openSeason(\'' + t.seasonId + '\')">' + esc((getSeason(t.seasonId)||{}).name || '') + '</a>' : '—') + '</td>' +
       '<td>' + esc(t.date || '—') + '</td>' +
-      '<td>' + esc(fmts) + '</td>' +
+      '<td>' + tournamentTopFourHtml(t) + '</td>' +
       '<td>' + (t.teamIds || []).length + '</td>' +
       '<td><button class="btn btn-sm" onclick="openTournament(\'' + t.id + '\')">打开</button></td>' +
       '</tr>';
