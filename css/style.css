@@ -245,26 +245,30 @@ body.focus-open{overflow:hidden}
 .tw-badge-world{background:#1e3a5f}
 .tw-badge-league{background:#2e7d4f}
 .tw-badge-secondary{background:#6b7787}
-tr.tw-wc td{background:#fff4d6 !important}
-tr.tw-world td{background:#e8f1fd !important}
-tr.tw-league td{background:#eaf6ea !important}
+tr.tw-wc td{background:#ffe066 !important}
+tr.tw-world td{background:#fffde7 !important}
+tr.tw-league td{background:#e2e6eb !important}
 tr.tw-secondary td{background:#f4f5f7 !important}
-tr.tw-wc:hover td{background:#ffedb4 !important}
-tr.tw-world:hover td{background:#dbe9fb !important}
-tr.tw-league:hover td{background:#def0de !important}
+tr.tw-wc:hover td{background:#ffd633 !important}
+tr.tw-world:hover td{background:#fff9c4 !important}
+tr.tw-league:hover td{background:#d5dae1 !important}
 tr.tw-secondary:hover td{background:#eceef1 !important}
-.card.tw-wc{background:#fff4d6;border-color:#e6cf8b}
-.card.tw-world{background:#e8f1fd;border-color:#c3d8f2}
-.card.tw-league{background:#eaf6ea;border-color:#c2e0c5}
+.card.tw-wc{background:#ffe066;border-color:#e6b800}
+.card.tw-world{background:#fffde7;border-color:#f0e9b8}
+.card.tw-league{background:#e2e6eb;border-color:#cfd6de}
 .card.tw-secondary{background:#f7f8fa;border-color:#dde3ea}
 .tw-band{height:6px;border-radius:4px;margin-bottom:12px}
-.tw-band.tw-wc{background:linear-gradient(90deg,#c9a227,#e6cf8b)}
-.tw-band.tw-world{background:linear-gradient(90deg,#1e3a5f,#3b6ea5)}
-.tw-band.tw-league{background:linear-gradient(90deg,#2e7d4f,#6aa84f)}
-.tw-band.tw-secondary{background:linear-gradient(90deg,#8a95a5,#c3ccd8)}
+.tw-band.tw-wc{background:linear-gradient(90deg,#f2c200,#ffe066)}
+.tw-band.tw-world{background:linear-gradient(90deg,#f5efc0,#fffde7)}
+.tw-band.tw-league{background:linear-gradient(90deg,#8a95a5,#cfd6de)}
+.tw-band.tw-secondary{background:linear-gradient(90deg,#aab3bf,#e2e6eb)}
 .h2h-win{color:#1f6b45;font-weight:800}
-.h2h-loss{color:#b3382c}
+.h2h-loss{color:#b3382c;font-weight:400}
 .h2h-score b{font-variant-numeric:tabular-nums}
+th.sortable-th{cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable-th:hover{text-decoration:underline}
+th.sortable-th[data-dir="asc"]::after{content:" ▲";font-size:9px;opacity:.85}
+th.sortable-th[data-dir="desc"]::after{content:" ▼";font-size:9px;opacity:.85}
 
 /* ---------- 队伍对比 ---------- */
 .compare-pickers{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px;align-items:flex-start}
@@ -423,6 +427,16 @@ th.sort-th:hover{background:var(--navy-light)}
   background:#fff;cursor:pointer;font-size:13px;color:var(--muted);font-weight:600;
 }
 .filter-chip.active{background:var(--navy);color:#fff;border-color:var(--navy)}
+
+/* ---------- 赛事范围筛选 ---------- */
+.tfilter{background:#fff;border:1px solid var(--border);border-radius:8px;margin-bottom:12px;padding:0 12px}
+.tfilter>summary{cursor:pointer;padding:9px 0;font-size:13px;font-weight:700;color:var(--navy);outline:none}
+.tfilter>summary:hover{color:var(--navy-light)}
+.tfilter-body{display:flex;flex-direction:column;gap:8px;padding:2px 0 12px}
+.tfilter-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.tfilter-label{min-width:46px;font-size:12px;font-weight:700;color:var(--muted)}
+.filter-date{width:88px;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font:inherit;font-size:12.5px;letter-spacing:1px;background:#fff}
+.club-region-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;width:100%;margin-top:8px}
 
 /* ---------- 表单 ---------- */
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}

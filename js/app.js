@@ -68,7 +68,7 @@ let editingClubId = null;
 let editingSeasonId = null;
 let seasonCopyFrom = null;      // 新建赛年时复制的源赛年 id
 let tournamentCopyFrom = null;  // 新建赛事时复制的源赛事 id
-let filters = { clubCategory: 'all', tournamentType: 'all', tournamentQuery: '' };
+let filters = { clubCategory: 'all', clubRegion: '', tournamentType: 'all', tournamentQuery: '' };
 let teamPicker = null;       // { target, selected:Set }
 let tForm = null;            // 新建赛事临时表单 { formats:[], teams:Set }
 let quickFill = { stageId: '', queue: [] };  // 快捷填入：当前阶段与待填队伍队列
@@ -1407,12 +1407,21 @@ function tournamentCard(t, opts){
    ============================================================ */
 function renderClubs(){
   const cats = [['all','全部'], ['hupl','HUPL席位'], ['secondary','次级'], ['external','外赛区']];
-  $('club-filters').innerHTML = cats.map(c =>
+  let chips = cats.map(c =>
     '<span class="filter-chip' + (filters.clubCategory === c[0] ? ' active' : '') + '" onclick="setClubFilter(\'' + c[0] + '\')">' + c[1] + '</span>'
   ).join('');
+  if(filters.clubCategory === 'external'){
+    chips += '<div class="club-region-row"><span class="muted" style="font-weight:600">赛区：</span>' +
+      '<span class="filter-chip' + (!filters.clubRegion ? ' active' : '') + '" onclick="setClubRegion(\'\')">全部</span>' +
+      Object.entries(REGIONS).map(([k, v]) =>
+        '<span class="filter-chip' + (filters.clubRegion === k ? ' active' : '') + '" onclick="setClubRegion(\'' + k + '\')">' + esc(v) + '</span>'
+      ).join('') + '</div>';
+  }
+  $('club-filters').innerHTML = chips;
 
   let list = state.clubs.slice();
   if(filters.clubCategory !== 'all') list = list.filter(c => c.category === filters.clubCategory);
+  if(filters.clubCategory === 'external' && filters.clubRegion) list = list.filter(c => c.region === filters.clubRegion);
   // 排序：类别 → 名称
   const catOrder = { hupl: 0, secondary: 1, external: 2 };
   list.sort((a,b) => (catOrder[a.category] - catOrder[b.category]) || a.name.localeCompare(b.name, 'zh'));
@@ -1427,7 +1436,9 @@ function renderClubs(){
   list.forEach(c => {
     const extra = c.category === 'hupl'
       ? (c.seat === 'temporary' ? '临时席位' : '固定席位')
-      : c.category === 'external' ? (REGIONS[c.region] || c.region || '—') : '—';
+      : c.category === 'external'
+        ? '<a class="clickable" onclick="setClubRegion(\'' + (c.region || '') + '\')" title="只看这个赛区">' + esc(REGIONS[c.region] || c.region || '—') + '</a>'
+        : '—';
     html += '<tr>' +
       '<td>' + teamSwatch(c.id, true) + '</td>' +
       '<td><input class="cell-input txt" value="' + esc(c.shortName) + '" onchange="updateClubField(\'' + c.id + '\',\'shortName\',this.value)"></td>' +
@@ -1441,7 +1452,16 @@ function renderClubs(){
   html += '</tbody></table></div>';
   el.innerHTML = html;
 }
-function setClubFilter(v){ filters.clubCategory = v; renderClubs(); }
+function setClubFilter(v){
+  filters.clubCategory = v;
+  if(v !== 'external') filters.clubRegion = '';
+  renderClubs();
+}
+function setClubRegion(r){
+  filters.clubCategory = 'external';
+  filters.clubRegion = r || '';
+  renderClubs();
+}
 function updateClubField(id, field, value){
   const c = getClub(id); if(!c) return;
   c[field] = value; saveState();
@@ -3646,15 +3666,98 @@ function unlinkTeam(id){
   saveState(); renderTeam();
 }
 let teamSeasonFilter = '';
+/* ---------------- 赛事范围筛选（队伍页 / 对比页共用） ---------------- */
+let teamFilter = newTournamentFilter();
+let compareFilter = newTournamentFilter();
+function newTournamentFilter(){
+  return { types: new Set(), subtypes: new Set(), seasons: new Set(), from: '', to: '', open: false };
+}
+function filterFor(scope){ return scope === 'team' ? teamFilter : compareFilter; }
+function tournamentFilterPass(t, f){
+  if(!f) return true;
+  if(f.types.size && !f.types.has(t.type)) return false;
+  if(f.subtypes.size && !f.subtypes.has(t.subtype)) return false;
+  if(f.seasons.size && !f.seasons.has(t.seasonId || '')) return false;
+  const d = String(t.date || '');
+  if(f.from && (d.length < 6 || d < f.from)) return false;
+  if(f.to && (d.length < 6 || d > f.to)) return false;
+  return true;
+}
+function filterChip(scope, kind, value, label){
+  const f = filterFor(scope);
+  return '<span class="filter-chip' + (f[kind].has(value) ? ' active' : '') +
+    '" onclick="toggleTournamentFilter(\'' + scope + '\',\'' + kind + '\',\'' + value + '\')">' + esc(label) + '</span>';
+}
+function filterSummaryText(f){
+  const parts = [];
+  if(f.types.size) parts.push(Array.from(f.types).map(x => ({ hupl: '联赛', secondary: '次级', international: '世界赛' }[x] || x)).join('/'));
+  if(f.subtypes.size) parts.push(f.subtypes.size + ' 个子类型');
+  if(f.seasons.size) parts.push(f.seasons.size + ' 个赛年');
+  if(f.from || f.to) parts.push((f.from || '…') + ' - ' + (f.to || '…'));
+  return parts.length ? '（' + parts.join(' · ') + '）' : '';
+}
+function renderTournamentFilter(scope){
+  const box = scope === 'team' ? $('team-season-filter') : $('compare-filter');
+  if(!box) return;
+  const f = filterFor(scope);
+  const typeDefs = [['hupl', '联赛'], ['secondary', '次级'], ['international', '世界赛']];
+  let html = '<details class="tfilter"' + (f.open ? ' open' : '') +
+    ' ontoggle="setFilterOpen(\'' + scope + '\',this.open)">' +
+    '<summary>筛选赛事范围' + filterSummaryText(f) + '</summary><div class="tfilter-body">';
+  html += '<div class="tfilter-row"><span class="tfilter-label">分类</span>' +
+    typeDefs.map(([v, l]) => filterChip(scope, 'types', v, l)).join('') + '</div>';
+  html += '<div class="tfilter-row"><span class="tfilter-label">子类型</span>' +
+    typeDefs.map(([tv]) => (SUBTYPES[tv] || []).map(([v, l]) => filterChip(scope, 'subtypes', v, l)).join('')).join('') + '</div>';
+  html += '<div class="tfilter-row"><span class="tfilter-label">日期</span>' +
+    '<input class="filter-date" id="' + scope + '-from" value="' + esc(f.from) + '" placeholder="200001" maxlength="6" inputmode="numeric" ' +
+    'onchange="setFilterDate(\'' + scope + '\',\'from\',this)">' +
+    '<span class="muted">—</span>' +
+    '<input class="filter-date" id="' + scope + '-to" value="' + esc(f.to) + '" placeholder="200312" maxlength="6" inputmode="numeric" ' +
+    'onchange="setFilterDate(\'' + scope + '\',\'to\',this)">' +
+    '</div>';
+  html += '<div class="tfilter-row"><span class="tfilter-label">赛年</span>' +
+    (state.seasons || []).map(s => filterChip(scope, 'seasons', s.id, s.name)).join('') + '</div>';
+  html += '<div class="tfilter-row"><button class="btn btn-sm" onclick="resetTournamentFilter(\'' + scope + '\')">重置筛选</button>' +
+    '<span class="muted" style="font-size:12px">勾选 = 只看这些；全不勾 = 不限</span></div>';
+  html += '</div></details>';
+  box.innerHTML = html;
+}
+function setFilterOpen(scope, open){ filterFor(scope).open = !!open; }
+function toggleTournamentFilter(scope, kind, value){
+  const f = filterFor(scope);
+  if(f[kind].has(value)) f[kind].delete(value); else f[kind].add(value);
+  refreshFilteredView(scope);
+}
+function setFilterDate(scope, kind, el){
+  const f = filterFor(scope);
+  const raw = String(el.value || '').replace(/\D/g, '').slice(0, 6);
+  if(raw && raw.length !== 6){
+    toast('日期请填 6 位数字，例如 200208', 'err');
+    el.value = f[kind];
+    return;
+  }
+  f[kind] = raw;
+  el.value = raw;
+  refreshFilteredView(scope);
+}
+function resetTournamentFilter(scope){
+  const f = filterFor(scope);
+  f.types.clear(); f.subtypes.clear(); f.seasons.clear();
+  f.from = ''; f.to = '';
+  refreshFilteredView(scope);
+  renderTournamentFilter(scope);
+}
+function refreshFilteredView(scope){
+  if(scope === 'team'){
+    const c = getClub(currentClubId);
+    if(c){ renderTeamHistory(c); renderTeamH2h(c); }
+    renderTournamentFilter('team');
+  } else {
+    renderCompare();
+  }
+}
 function renderTeamSeasonFilter(c){
-  const el = $('team-season-filter');
-  if(!el) return;
-  el.innerHTML = '<div class="filters" style="margin-bottom:2px">' +
-    '<span class="muted" style="align-self:center;font-weight:600">赛年筛选：</span>' +
-    '<select class="cell-input" style="width:auto;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px" onchange="onTeamSeasonChange(this.value)">' +
-    '<option value="">全部赛年</option>' +
-    (state.seasons || []).map(s => '<option value="' + s.id + '"' + (teamSeasonFilter === s.id ? ' selected' : '') + '>' + esc(s.name) + '</option>').join('') +
-    '</select></div>';
+  renderTournamentFilter('team');
 }
 function onTeamSeasonChange(v){
   teamSeasonFilter = v;
@@ -3669,7 +3772,7 @@ function renderTeamHistory(c){
   state.tournaments.forEach(t => {
     const members = (t.teamIds || []).filter(id => group.includes(id));
     if(members.length === 0) return;
-    if(teamSeasonFilter && t.seasonId !== teamSeasonFilter) return;
+    if(!tournamentFilterPass(t, teamFilter)) return;
     const rankRow = (t.finalStandings || []).find(r => group.includes(r.clubId));
     hist.push({ t: t, members: members, rank: rankRow ? rankRow.rank : null });
   });
@@ -3767,12 +3870,13 @@ function compareRankOf(t, group){
 function emptyCatStats(){
   return { played: 0, wins: 0, losses: 0, draws: 0, sf: 0, sa: 0, diff: 0, winRate: 0, first: 0, second: 0, top4: 0, attended: 0 };
 }
-function teamCompareSummary(clubId){
+function teamCompareSummary(clubId, filter){
   const group = compareGroupOf(clubId);
   const log = [];
   const cats = {};
   CAT_KEYS.forEach(k => { cats[k] = emptyCatStats(); });
   (state.tournaments || []).forEach(t => {
+    if(filter && !tournamentFilterPass(t, filter)) return;
     (t.stages || []).forEach(s => (s.matches || []).forEach(m => {
       const aIn = group.has(m.teamAId), bIn = group.has(m.teamBId);
       if(aIn === bIn) return;
@@ -3811,6 +3915,7 @@ function teamCompareSummary(clubId){
   totals.winRate = totals.played ? Math.round(totals.wins / totals.played * 100) : 0;
   const attended = [];
   (state.tournaments || []).forEach(t => {
+    if(filter && !tournamentFilterPass(t, filter)) return;
     if(!(t.teamIds || []).some(id => group.has(id))) return;
     attended.push(t);
     const cat = tournamentCat(t);
@@ -3868,8 +3973,9 @@ function compareCommonOpponents(sums){
       return tb - ta;
     });
 }
-function compareSharedTournaments(sums){
+function compareSharedTournaments(sums, filter){
   return (state.tournaments || [])
+    .filter(t => !filter || tournamentFilterPass(t, filter))
     .filter(t => sums.every(s => (t.teamIds || []).some(id => s.group.has(id))))
     .map(t => ({ t: t, ranks: sums.map(s => compareRankOf(t, s.group)) }))
     .sort((x, y) => String(y.t.date || '').localeCompare(String(x.t.date || '')) || ((y.t.createdAt || 0) - (x.t.createdAt || 0)));
@@ -4054,6 +4160,7 @@ function renderCompare(){
   ensureCompareSelection();
   const ids = compareState.ids.filter(id => getClub(id));
   if(ids.length !== compareState.ids.length) compareState.ids = ids;
+  renderTournamentFilter('compare');
   // 选择器
   let pickHtml = '';
   ids.forEach((id, i) => {
@@ -4081,10 +4188,10 @@ function renderCompare(){
     body.innerHTML = '<div class="empty">选中的队伍里有互相关联的队伍（按同一支计算），换一支再比。</div>';
     return;
   }
-  const sums = ids.map(id => teamCompareSummary(id));
+  const sums = ids.map(id => teamCompareSummary(id, compareFilter));
   const pairs = comparePairs(sums);
   const common = compareCommonOpponents(sums);
-  const shared = compareSharedTournaments(sums);
+  const shared = compareSharedTournaments(sums, compareFilter);
   const rankBest = sums.map(() => 0);
   shared.forEach(x => {
     const ranks = x.ranks;
@@ -4152,7 +4259,7 @@ function renderCompare(){
       const bn = getClub(ids[p.j]).shortName || getClub(ids[p.j]).name;
       html += '<h3 class="cmp-sub">' + esc(an) + ' vs ' + esc(bn) + '：' + p.aw + ' : ' + p.bw +
         (p.dr ? '（' + p.dr + ' 平）' : '') + '</h3>';
-      html += '<div class="table-wrap"><table><thead><tr><th>日期</th><th>赛事</th><th>比分（左 vs 右）</th></tr></thead><tbody>';
+      html += '<div class="table-wrap"><table><thead><tr><th>日期</th><th>赛事</th><th>队伍 A</th><th>比分</th><th>队伍 B</th></tr></thead><tbody>';
       p.list.slice().reverse().forEach(x => {
         const m = x.m;
         const w = matchWinner(m);
@@ -4162,8 +4269,9 @@ function renderCompare(){
         html += '<tr class="' + twClass(x.t) + '">' +
           '<td>' + esc(x.t.date || '—') + '</td>' +
           '<td><a class="clickable" onclick="openTournament(\'' + x.t.id + '\')">' + esc(x.t.name) + '</a></td>' +
-          '<td class="h2h-score"><span class="' + aCls + '">' + esc(aName) + '</span> <b>' +
-          esc(m.scoreA) + ' : ' + esc(m.scoreB) + '</b> <span class="' + bCls + '">' + esc(bName) + '</span></td></tr>';
+          '<td class="' + aCls + '">' + esc(aName) + '</td>' +
+          '<td class="h2h-score" style="text-align:center"><b>' + esc(m.scoreA) + ' : ' + esc(m.scoreB) + '</b></td>' +
+          '<td class="' + bCls + '">' + esc(bName) + '</td></tr>';
       });
       html += '</tbody></table></div>';
     });
@@ -4221,7 +4329,7 @@ function renderCompare(){
 function copyCompareText(){
   const ids = compareState.ids.filter(id => getClub(id));
   if(ids.length < 2){ toast('先选两支队伍', 'err'); return; }
-  const sums = ids.map(id => teamCompareSummary(id));
+  const sums = ids.map(id => teamCompareSummary(id, compareFilter));
   const pairs = comparePairs(sums);
   const lines = ['【' + ids.map(id => getClub(id).name).join(' vs ') + '】'];
   pairs.forEach(p => {
@@ -5407,6 +5515,70 @@ async function bulkOcrRecognize(){
 /* ============================================================
    初始化
    ============================================================ */
+/* ---------------- 通用表头排序 ----------------
+   所有没有自带排序逻辑的表头都可以点：数字按数字比较，中文按拼音/中文排序。
+------------------------------------------------ */
+let tableSortTimer = null;
+function installTableSorting(){
+  const root = $('app');
+  if(!root) return;
+  const run = () => {
+    if(tableSortTimer) return;
+    tableSortTimer = setTimeout(() => { tableSortTimer = null; makeTablesSortable(root); }, 40);
+  };
+  try{ new MutationObserver(run).observe(root, { childList: true, subtree: true }); }catch(e){}
+  makeTablesSortable(root);
+}
+function makeTablesSortable(root){
+  (root || document).querySelectorAll('table').forEach(table => {
+    if(!table.tHead || !table.tHead.rows.length) return;
+    const ths = Array.from(table.tHead.rows[0].cells);
+    if(ths.some(th => th.classList.contains('sort-th'))) return;   // 已有自定义排序
+    ths.forEach(th => {
+      if(th.dataset.sortBound || th.colSpan > 1) return;
+      th.dataset.sortBound = '1';
+      th.classList.add('sortable-th');
+      th.addEventListener('click', () => sortTableByColumn(table, th));
+    });
+  });
+}
+function tableCellText(td){
+  return td ? String(td.innerText || td.textContent || '').replace(/\s+/g, ' ').trim() : '';
+}
+function parseTableCellNumber(s){
+  const t = String(s == null ? '' : s).replace(/[\s,，%#＋+]/g, '');
+  return /^-?\d+(\.\d+)?$/.test(t) ? parseFloat(t) : null;
+}
+function compareTableCellText(a, b){
+  const na = parseTableCellNumber(a), nb = parseTableCellNumber(b);
+  if(na != null && nb != null) return na - nb;
+  const ea = (a === '' || a === '—' || a === '-');
+  const eb = (b === '' || b === '—' || b === '-');
+  if(ea && !eb) return 1;
+  if(eb && !ea) return -1;
+  return String(a).localeCompare(String(b), 'zh-Hans-CN');
+}
+function sortTableByColumn(table, th){
+  const tbody = table.tBodies[0];
+  if(!tbody) return;
+  const ths = Array.from(table.tHead.rows[0].cells);
+  const idx = ths.indexOf(th);
+  if(idx < 0) return;
+  const dir = th.dataset.dir === 'asc' ? 'desc' : 'asc';
+  ths.forEach(x => { if(x !== th) x.removeAttribute('data-dir'); });
+  th.dataset.dir = dir;
+  const rows = Array.from(tbody.rows);
+  rows.sort((ra, rb) => {
+    const a = tableCellText(ra.cells[idx]);
+    const b = tableCellText(rb.cells[idx]);
+    const emptyA = (a === '' || a === '—' || a === '-');
+    const emptyB = (b === '' || b === '—' || b === '-');
+    if(emptyA !== emptyB) return emptyA ? 1 : -1;   // 空值始终排最后
+    return (dir === 'asc' ? 1 : -1) * compareTableCellText(a, b);
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+
 async function init(){
   // 先兜底一个空状态，保证任何情况下页面都能渲染出来
   state = defaultState();
@@ -5448,6 +5620,7 @@ async function init(){
   try{ applySeedOnBoot(); }catch(e){ console.warn('内置数据补齐失败', e); }
 
   go('dashboard');
+  installTableSorting();
   showStorageNotice();
   initMultiTabGuard();
 }
