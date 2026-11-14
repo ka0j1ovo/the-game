@@ -3361,8 +3361,57 @@ function openTeamPicker(target){
   }
   $('team-picker-title').textContent = target === 'tournament' ? '选择参赛队伍' : (target.startsWith('link:') ? '选择要关联的队伍' : '选择积分表队伍');
   $('team-picker-search').value = '';
+  $('team-picker-bulk').value = '';
+  $('team-picker-bulk-create').checked = false;
+  $('team-picker-bulk-status').textContent = '';
   renderTeamPickerList();
   openModal('modal-team-picker');
+}
+/* 批量粘贴队名：在俱乐部池里识别（含近似纠正），一次性勾选 */
+function pickerBulkAdd(){
+  if(!teamPicker) return;
+  const raw = $('team-picker-bulk').value;
+  const tokens = String(raw || '').split(/[\s,，;；|、/]+/).map(s => s.trim()).filter(Boolean);
+  if(!tokens.length){ toast('请先粘贴队伍名（空格 / 逗号 / 换行分隔）', 'err'); return; }
+  const create = $('team-picker-bulk-create').checked;
+  const idx = clubLookupIndex();
+  let added = 0; const corrected = [], unknown = [], created = [];
+  tokens.forEach(tok => {
+    const key = tok.toLowerCase();
+    const list = idx.get(key);
+    let club = list && list.length ? list[0] : null;
+    if(club){
+      if(!teamPicker.selected.has(club.id)){ teamPicker.selected.add(club.id); added++; }
+      return;
+    }
+    const hit = fuzzyMatchClub(tok, state.clubs);
+    if(hit){
+      if(!teamPicker.selected.has(hit.id)){ teamPicker.selected.add(hit.id); added++; }
+      corrected.push(tok + ' → ' + (hit.shortName || hit.name));
+      return;
+    }
+    if(create){
+      const c = {
+        id: uid('c'), createdAt: Date.now(), name: tok, shortName: tok,
+        category: 'external', seat: null, region: null, color: '#8899aa',
+        note: '批量添加自动创建', relatedIds: []
+      };
+      state.clubs.push(c);
+      teamPicker.selected.add(c.id);
+      created.push(tok);
+      idx.set(key, [c]);
+      return;
+    }
+    unknown.push(tok);
+  });
+  if(created.length) saveState();
+  renderTeamPickerList();
+  const parts = ['已勾选 ' + added + ' 支'];
+  if(corrected.length) parts.push('自动纠正 ' + corrected.length + ' 支（' + corrected.slice(0, 4).join('、') + (corrected.length > 4 ? '…' : '') + '）');
+  if(created.length) parts.push('新建 ' + created.length + ' 支（' + created.slice(0, 4).join('、') + '）');
+  if(unknown.length) parts.push('未识别 ' + unknown.length + ' 支：' + unknown.slice(0, 6).join('、'));
+  $('team-picker-bulk-status').textContent = parts.join('；');
+  if(unknown.length && !create) toast('有 ' + unknown.length + ' 支队伍在俱乐部池里找不到', 'err');
 }
 function renderTeamPickerList(){
   const cats = { hupl: 0, secondary: 1, external: 2 };
@@ -3671,6 +3720,71 @@ function pickBulkClub(list, stageIds, eventIds){
   }
   return list[0];
 }
+
+/* ---------------- 队名纠错（OCR / 手打都走这里） ---------------- */
+function levenshtein(a, b){
+  a = String(a == null ? '' : a);
+  b = String(b == null ? '' : b);
+  if(a === b) return 0;
+  const m = a.length, n = b.length;
+  if(!m) return n;
+  if(!n) return m;
+  let prev = new Array(n + 1), cur = new Array(n + 1);
+  for(let j = 0; j <= n; j++) prev[j] = j;
+  for(let i = 1; i <= m; i++){
+    cur[0] = i;
+    for(let j = 1; j <= n; j++){
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+    }
+    const t = prev; prev = cur; cur = t;
+  }
+  return prev[n];
+}
+/* OCR 常见混淆字符归一：0/O、1/I/l、5/S、8/B、2/Z */
+function ocrNormalize(s){
+  return String(s == null ? '' : s).toLowerCase()
+    .replace(/0/g, 'o').replace(/1/g, 'i').replace(/l/g, 'i')
+    .replace(/5/g, 's').replace(/8/g, 'b').replace(/2/g, 'z');
+}
+function fuzzyThreshold(len){
+  if(len <= 3) return 0;
+  if(len <= 5) return 1;
+  return 2;
+}
+/* 在候选队伍里找最接近的名字，找不到返回 null */
+function fuzzyMatchClub(token, candidates){
+  const raw = String(token == null ? '' : token).trim();
+  if(!raw || raw.length < 4) return null;
+  const t = ocrNormalize(raw);
+  let best = null, bestD = 99;
+  (candidates || []).forEach(c => {
+    [c.shortName, c.name].forEach(n => {
+      const s = ocrNormalize(n);
+      if(!s) return;
+      if(t[0] !== s[0]) return;                    // 首字符必须一致，避免乱配
+      const d = levenshtein(t, s);
+      const limit = fuzzyThreshold(Math.min(t.length, s.length));
+      if(d <= limit && d < bestD){ best = c; bestD = d; }
+    });
+  });
+  return best;
+}
+function currentRosterClubs(){
+  const t = getTournament(currentTournamentId);
+  if(!t) return [];
+  return (t.teamIds || []).map(id => getClub(id)).filter(Boolean);
+}
+/* 解析一个队名：先精确匹配俱乐部池，再按名单优先做近似纠正 */
+function resolveClubToken(token, idx, stageIds, eventIds, roster){
+  const key = String(token == null ? '' : token).trim().toLowerCase();
+  const list = key ? idx.get(key) : null;
+  if(list && list.length) return { club: pickBulkClub(list, stageIds, eventIds), corrected: false };
+  const pool = (roster && roster.length) ? roster : state.clubs;
+  const hit = fuzzyMatchClub(token, pool) || ((roster && roster.length) ? fuzzyMatchClub(token, state.clubs) : null);
+  if(hit) return { club: hit, corrected: true };
+  return { club: null, corrected: false };
+}
 function findBulkTarget(s, r){
   if(!r.aId || !r.bId) return null;
   const ms = s.matches || [];
@@ -3732,17 +3846,24 @@ function bulkPreview(){
   const idx = clubLookupIndex();
   const tour = getTournament(currentTournamentId) || {};
   const eventIds = new Set(tour.teamIds || []);
+  const roster = currentRosterClubs();
   const stageIds = new Set();
   (s.matches || []).forEach(m => { if(m.teamAId) stageIds.add(m.teamAId); if(m.teamBId) stageIds.add(m.teamBId); });
-  let ambiguous = 0;
+  let ambiguous = 0, correctedCount = 0;
   const rows = parsed.matches.map(p => {
-    const aList = idx.get(p.a.toLowerCase()), bList = idx.get(p.b.toLowerCase());
-    const a = pickBulkClub(aList, stageIds, eventIds);
-    const b = pickBulkClub(bList, stageIds, eventIds);
+    const aRes = resolveClubToken(p.a, idx, stageIds, eventIds, roster);
+    const bRes = resolveClubToken(p.b, idx, stageIds, eventIds, roster);
+    const a = aRes.club, b = bRes.club;
+    const aList = idx.get(String(p.a).toLowerCase()), bList = idx.get(String(p.b).toLowerCase());
     if((aList && aList.length > 1) || (bList && bList.length > 1)) ambiguous++;
+    const corrected = !!(aRes.corrected || bRes.corrected);
+    if(corrected) correctedCount++;
     return Object.assign({}, p, {
       aId: a && a.id, bId: b && b.id,
-      aName: a ? a.name : p.a, bName: b ? b.name : p.b,
+      aName: a ? (a.shortName || a.name) : p.a,
+      bName: b ? (b.shortName || b.name) : p.b,
+      correctedFromA: aRes.corrected && a ? p.a : '',
+      correctedFromB: bRes.corrected && b ? p.b : '',
       target: null, state: ''
     });
   });
@@ -3761,6 +3882,7 @@ function bulkPreview(){
     rows.filter(r => r.state === '新增对局').length + ' 场新增 · ' +
     rows.filter(r => r.state === '已有比分').length + ' 场已有比分 · ' +
     rows.filter(r => r.state === '队伍不存在').length + ' 场队伍不存在' +
+    (correctedCount ? ' · <span class="ok-text">' + correctedCount + ' 场队伍名已自动纠正</span>' : '') +
     (ambiguous ? ' · <span class="warn-text">' + ambiguous + ' 场有同简称队伍，已按本阶段/本赛事优先匹配</span>' : '') + '</div>';
   if(noTarget && !$('bulk-add').checked){
     html += '<div class="bulk-hint">有 ' + noTarget + ' 场暂时没有匹配到空位：如果按轮次顺序录入，上一轮胜者会在写入时自动推进，系统会再次匹配；' +
@@ -3772,9 +3894,9 @@ function bulkPreview(){
     const bad = r.state === '队伍不存在';
     html += '<tr' + (bad ? ' class="bulk-bad"' : '') + '>' +
       '<td class="nowrap">' + esc(r.round) + '</td>' +
-      '<td>' + esc(r.aName || r.a) + '</td>' +
+      '<td>' + esc(r.aName || r.a) + (r.correctedFromA ? ' <span class="muted">（原 ' + esc(r.correctedFromA) + '）</span>' : '') + '</td>' +
       '<td class="nowrap"><b>' + esc(r.scoreA === '' ? '—' : r.scoreA) + ' : ' + esc(r.scoreB === '' ? '—' : r.scoreB) + '</b></td>' +
-      '<td>' + esc(r.bName || r.b) + '</td>' +
+      '<td>' + esc(r.bName || r.b) + (r.correctedFromB ? ' <span class="muted">（原 ' + esc(r.correctedFromB) + '）</span>' : '') + '</td>' +
       '<td class="nowrap">' + esc(r.state) + '</td></tr>';
   });
   html += '</tbody></table></div>';
@@ -3891,6 +4013,50 @@ function ocrJsonToText(obj){
   });
   return lines.join('\n');
 }
+/* 把本赛事参赛名单写进提示词，让模型自己往名单上靠 */
+function buildOcrPrompt(roster){
+  const list = (roster || []).map(c => {
+    const s = String(c.shortName || c.name || '').trim();
+    const n = String(c.name || '').trim();
+    return s && n && s !== n ? s + '（' + n + '）' : (s || n);
+  }).filter(Boolean).join('、');
+  return '你是电竞赛事数据录入助手。图片是赛制框图或对阵表。' +
+    (list
+      ? '本赛事的参赛队伍只有：' + list + '。识别出的队名必须来自这份名单；' +
+        '如果图上的名字看起来是拼写错误或 OCR 误识别（例如 BOTU、B0TV），' +
+        '请对照名单纠正成最接近的队名（例如 BOTU → BOTV），不要输出名单之外的队伍。'
+      : '') +
+    '请只输出 JSON，不要任何解释，格式为：' +
+    '{"rounds":[{"name":"胜者组第1轮","matches":[{"a":"DRE","scoreA":3,"b":"DGE","scoreB":1}]}]}。' +
+    '轮次名用图中的分区名（如 胜者组第1轮、败者组第2轮、总决赛）；队伍用名单里的简称；' +
+    '比分未知或没填写时 scoreA/scoreB 用空字符串。不要编造队伍或比分。';
+}
+/* 模型输出后再按名单纠正一次，返回纠正记录 */
+function findRosterTeam(name, roster){
+  const key = String(name == null ? '' : name).trim().toLowerCase();
+  if(!key) return null;
+  const exact = (roster || []).find(c =>
+    String(c.shortName || '').toLowerCase() === key || String(c.name || '').toLowerCase() === key);
+  return exact || fuzzyMatchClub(name, roster);
+}
+function correctOcrTeams(obj, roster){
+  const fixes = [];
+  (obj.rounds || []).forEach(r => (r.matches || []).forEach(m => {
+    ['a', 'b'].forEach(k => {
+      const v = m[k];
+      if(!v) return;
+      const hit = findRosterTeam(v, roster);
+      if(!hit) return;
+      const canonical = String(hit.shortName || hit.name || '').trim();
+      if(canonical && canonical !== String(v).trim()){
+        fixes.push(String(v).trim() + ' → ' + canonical);
+        m[k] = canonical;
+      }
+    });
+  }));
+  return fixes;
+}
+
 async function bulkOcrRecognize(){
   const status = $('bulk-ocr-status');
   const file = ($('bulk-image').files || [])[0];
@@ -3905,11 +4071,8 @@ async function bulkOcrRecognize(){
   status.textContent = '正在识别…';
   try{
     const dataUrl = await fileToDataUrl(file);
-    const prompt = '你是电竞赛事数据录入助手。图片是赛制框图或对阵表。' +
-      '请只输出 JSON，不要任何解释，格式为：' +
-      '{"rounds":[{"name":"胜者组第1轮","matches":[{"a":"DRE","scoreA":3,"b":"DGE","scoreB":1}]}]}。' +
-      '轮次名用图中的分区名（如 胜者组第1轮、败者组第2轮、总决赛）；队伍用图中的简称；' +
-      '比分未知或没填写时 scoreA/scoreB 用空字符串。不要编造队伍或比分。';
+    const roster = currentRosterClubs();
+    const prompt = buildOcrPrompt(roster);
     const res = await fetch(cfg.base.replace(/\/+$/, '') + '/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.key },
@@ -3931,11 +4094,15 @@ async function bulkOcrRecognize(){
     }
     const data = await res.json();
     const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-    const text = ocrJsonToText(extractJson(content));
+    const obj = extractJson(content);
+    const fixes = correctOcrTeams(obj, roster);
+    const text = ocrJsonToText(obj);
     if(!text.trim()) throw new Error('没有识别出对局');
     $('bulk-text').value = text;
     bulkPreview();
-    status.textContent = '识别完成，已填入上方文本框，请核对后点「写入」。';
+    status.textContent = '识别完成，已填入上方文本框，请核对后点「写入」。' +
+      (roster.length ? '（已按本赛事 ' + roster.length + ' 支参赛队伍校对）' : '') +
+      (fixes.length ? ' 自动纠正：' + fixes.slice(0, 6).join('、') : '');
   }catch(e){
     status.textContent = '识别失败：' + ((e && e.message) || e);
   }

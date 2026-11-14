@@ -311,6 +311,14 @@
 <div class="modal-overlay" id="modal-team-picker">
   <div class="modal modal-wide">
     <h3 id="team-picker-title">选择队伍</h3>
+    <div class="bulk-picker">
+      <textarea id="team-picker-bulk" class="pick-search" rows="2" spellcheck="false"
+        placeholder="批量添加：一次粘贴全部队伍，空格 / 逗号 / 换行分隔（如 DRE RBG BOTV）"
+        onkeydown="if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();pickerBulkAdd();}"></textarea>
+      <button class="btn btn-sm btn-primary" onclick="pickerBulkAdd()">批量添加</button>
+      <label class="bulk-picker-create"><input type="checkbox" id="team-picker-bulk-create"> 未识别的自动创建</label>
+    </div>
+    <div id="team-picker-bulk-status" class="muted" style="font-size:12.5px;margin:2px 0 8px"></div>
     <input type="text" id="team-picker-search" class="pick-search" placeholder="搜索队伍名称 / 简称…" oninput="pickerSearch(this.value)">
     <div class="team-pick" id="team-picker-list"></div>
     <div class="modal-actions">
