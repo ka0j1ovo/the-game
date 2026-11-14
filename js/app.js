@@ -87,7 +87,50 @@ function teamSwatch(id, showName){
     (showName ? esc(clubName(id)) : '') + (c && c.shortName ? ' <span class="muted">(' + esc(c.shortName) + ')</span>' : '') + '</span>';
 }
 
-/* ---------------- 存储 ---------------- */
+/* ---------------- 存储 ----------------
+   分层持久化：IndexedDB 主存（容量大、不易被配额挡住）
+              + localStorage 镜像（兼容旧版本、可被导出/诊断）
+              + 历史快照（回滚误删/误覆盖）
+   每次写入都会留下可追踪的状态；写入失败会常驻提示，而不是只闪 2 秒。
+------------------------------------------ */
+const STORAGE_META_KEY = 'thegame-meta-v1';
+const DB_NAME = 'thegame-db';
+const DB_VER = 1;
+const KV_STORE = 'kv';
+const SNAP_STORE = 'snapshots';
+const SNAPDATA_STORE = 'snapshotData';
+const KEY_CURRENT = 'current';
+const SNAP_LIMIT = 15;                    // 最多保留的历史快照数量
+const SNAP_INTERVAL = 5 * 60 * 1000;      // 自动快照最小间隔
+const IDB_TIMEOUT = 4000;
+const TAB_ID = 'tab_' + Math.random().toString(36).slice(2, 8);
+
+const storage = {
+  db: null,
+  idbOk: false, idbError: '',
+  lsOk: true, lsError: '',
+  origin: 'file://',
+  lastSavedAt: 0,
+  lastLocalAt: 0,
+  chars: 0,
+  bytes: 0,
+  rev: 0,
+  snapAt: 0,
+  snapCount: 0,
+  pendingPayload: null,
+  pendingSavedAt: 0,
+  writeTimer: null,
+  brokenKey: '',
+  notice: null,          // { type:'err'|'warn'|'info', html }
+  otherTabAt: 0,
+  lastAnnounce: 0,
+  edited: false,
+  idbHydrating: null,
+  idbPending: true,
+  idbFailed: false,
+  loading: true
+};
+
 function defaultState(){
   return {
     version: 1,
@@ -95,17 +138,1031 @@ function defaultState(){
     clubs: [], seasons: [], tournaments: []
   };
 }
-function loadState(){
-  try{
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if(!raw) return defaultState();
-    const s = JSON.parse(raw);
-    return Object.assign(defaultState(), s);
-  }catch(e){ return defaultState(); }
+
+function currentOriginLabel(){
+  if(location.protocol === 'file:') return 'file://（本地文件）';
+  if(location.protocol === 'blob:') return 'blob:（沙箱预览）';
+  return location.origin || (location.protocol + '//' + location.host);
 }
+function fmtBytes(n){
+  n = n || 0;
+  if(n < 1024) return n + ' B';
+  if(n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(2) + ' MB';
+}
+function pad2(n){ return n < 10 ? '0' + n : '' + n; }
+function fmtTime(ts){
+  if(!ts) return '—';
+  const d = new Date(ts);
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  const hm = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  if(sameDay) return hm;
+  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
+}
+function fmtDateTime(ts){
+  if(!ts) return '—';
+  const d = new Date(ts);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' +
+    pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+}
+function dataCounts(s){
+  s = s || state || defaultState();
+  let stages = 0, matches = 0, filled = 0;
+  (s.tournaments || []).forEach(t => (t.stages || []).forEach(st => {
+    stages++;
+    (st.matches || []).forEach(m => { matches++; if(m.teamAId || m.teamBId) filled++; });
+  }));
+  return {
+    clubs: (s.clubs || []).length,
+    seasons: (s.seasons || []).length,
+    tournaments: (s.tournaments || []).length,
+    stages: stages,
+    matches: matches,
+    filledMatches: filled
+  };
+}
+function countsText(c){
+  return (c.tournaments || 0) + ' 赛事 · ' + (c.stages || 0) + ' 阶段 · ' + (c.matches || 0) + ' 对局';
+}
+
+/* 把任意来源的数据补齐成可用结构，避免旧数据/坏数据导致整页空白 */
+function normalizeState(raw){
+  const s = Object.assign(defaultState(), raw && typeof raw === 'object' ? raw : {});
+  if(!s.meta || typeof s.meta !== 'object') s.meta = { tournamentName: 'The Game', countryName: '黄狗国' };
+  else {
+    if(!s.meta.tournamentName) s.meta.tournamentName = 'The Game';
+    if(!s.meta.countryName) s.meta.countryName = '黄狗国';
+  }
+  if(!Array.isArray(s.clubs)) s.clubs = [];
+  if(!Array.isArray(s.seasons)) s.seasons = [];
+  if(!Array.isArray(s.tournaments)) s.tournaments = [];
+  s.clubs = s.clubs.filter(c => c && typeof c === 'object');
+  s.seasons = s.seasons.filter(x => x && typeof x === 'object');
+  s.tournaments = s.tournaments.filter(t => t && typeof t === 'object');
+  s.clubs.forEach(c => {
+    if(!c.id) c.id = uid('c');
+    if(!Array.isArray(c.relatedIds)) c.relatedIds = [];
+  });
+  s.seasons.forEach(x => {
+    if(!x.id) x.id = uid('s');
+    if(!x.points || typeof x.points !== 'object') x.points = { stations: [], clubIds: [], data: {} };
+    if(!Array.isArray(x.points.stations)) x.points.stations = [];
+    if(!Array.isArray(x.points.clubIds)) x.points.clubIds = [];
+    if(!x.points.data || typeof x.points.data !== 'object') x.points.data = {};
+  });
+  s.tournaments.forEach(t => {
+    if(!t.id) t.id = uid('t');
+    if(!Array.isArray(t.teamIds)) t.teamIds = [];
+    if(!Array.isArray(t.stages)) t.stages = [];
+    if(!Array.isArray(t.finalStandings)) t.finalStandings = [];
+    t.stages.forEach(st => {
+      if(!st.id) st.id = uid('stg');
+      if(!Array.isArray(st.matches)) st.matches = [];
+      if(!st.config || typeof st.config !== 'object') st.config = {};
+      st.matches.forEach(m => { if(!m.id) m.id = uid('m'); });
+    });
+  });
+  // 阶段 id 必须全局唯一：复制赛事曾经会留下重复 id，导致编辑到别的赛事里
+  const stageIds = new Set();
+  s.tournaments.forEach(t => (t.stages || []).forEach(st => {
+    if(!st.id || stageIds.has(st.id)) st.id = uid('stg');
+    stageIds.add(st.id);
+  }));
+  return s;
+}
+
+/* ---------------- 内置静态数据集 ----------------
+   数据固化在 data/seed-data.js（window.THEGAME_SEED，由 tools/build-seed.mjs 生成）。
+   每次启动都会把「内置数据里有、但本地缺了」的部分补齐，
+   所以即使浏览器存储被清、或者以后重写渲染/赛制代码，原有对阵框架也会回来。
+   手动删掉的内置条目会被记到 meta.seedRemoved 里，不会反复复活。
+------------------------------------------------ */
+function getSeedBundle(){
+  const b = (typeof window !== 'undefined') ? window.THEGAME_SEED : null;
+  if(!b || !b.data) return null;
+  if(!b._state){
+    try{
+      const copy = JSON.parse(JSON.stringify(b.data));
+      b._state = normalizeState(copy);
+      b._state.meta = Object.assign({}, b._state.meta, { seedBundle: true });
+      b._stats = dataCounts(b._state);
+    }catch(e){
+      console.warn('内置数据集解析失败', e);
+      return null;
+    }
+  }
+  return b;
+}
+function seedStats(){
+  const b = getSeedBundle();
+  return b ? (b.stats || dataCounts(b._state)) : null;
+}
+function seedHasId(id){
+  const b = getSeedBundle();
+  if(!b || !id) return false;
+  const st = b._state;
+  if((st.clubs || []).some(x => x.id === id)) return true;
+  if((st.seasons || []).some(x => x.id === id)) return true;
+  return (st.tournaments || []).some(t => t.id === id ||
+    (t.stages || []).some(s => s.id === id || (s.matches || []).some(m => m.id === id)));
+}
+function seedRemovedSet(s){
+  s = s || state;
+  if(!s.meta || typeof s.meta !== 'object') s.meta = {};
+  if(!Array.isArray(s.meta.seedRemoved)) s.meta.seedRemoved = [];
+  return new Set(s.meta.seedRemoved);
+}
+/* 记录「这是用户主动删掉的」，避免下次启动又被内置数据补回来 */
+function rememberSeedId(id){
+  if(!id) return;
+  const b = getSeedBundle();
+  if(!b || !seedHasId(id)) return;
+  if(!state.meta || typeof state.meta !== 'object') state.meta = {};
+  if(!Array.isArray(state.meta.seedRemoved)) state.meta.seedRemoved = [];
+  if(state.meta.seedRemoved.indexOf(id) < 0) state.meta.seedRemoved.push(id);
+}
+
+/* ---------------- 重复队伍合并 ----------------
+   内置数据和本机旧数据可能是同一批队伍、只是 id 不同。
+   这里按「简称 + 全称」把两份合成一份：保留本机原有的记录（颜色/备注不动），
+   把内置数据里的队伍 id 记成别名（meta.seedClubAlias），并把所有引用改过去。
+------------------------------------------------ */
+function clubKey(c){
+  return String((c && c.shortName) || '').trim().toLowerCase() + '|' + String((c && c.name) || '').trim().toLowerCase();
+}
+function seedClubIds(){
+  const b = getSeedBundle();
+  return b ? new Set((b._state.clubs || []).map(c => c.id)) : new Set();
+}
+function seedClubAliases(target){
+  target = target || state;
+  if(!target.meta || typeof target.meta !== 'object') target.meta = {};
+  if(!target.meta.seedClubAlias || typeof target.meta.seedClubAlias !== 'object') target.meta.seedClubAlias = {};
+  return target.meta.seedClubAlias;
+}
+function uniq(arr){ return Array.from(new Set(arr)); }
+function remapStateClubRefs(map){
+  const r = id => (id && map[id]) || id;
+  (state.tournaments || []).forEach(t => {
+    if(Array.isArray(t.teamIds)) t.teamIds = uniq(t.teamIds.map(r));
+    (t.finalStandings || []).forEach(x => { if(x && x.clubId) x.clubId = r(x.clubId); });
+    if(t.points && Array.isArray(t.points.clubIds)) t.points.clubIds = uniq(t.points.clubIds.map(r));
+    (t.stages || []).forEach(st => {
+      if(st.config && Array.isArray(st.config.groups)) st.config.groups.forEach(g => {
+        if(Array.isArray(g.teamIds)) g.teamIds = uniq(g.teamIds.map(r));
+      });
+      if(st.config && st.config.seeds && typeof st.config.seeds === 'object'){
+        Object.keys(st.config.seeds).forEach(k => { if(st.config.seeds[k]) st.config.seeds[k] = r(st.config.seeds[k]); });
+      }
+      (st.matches || []).forEach(m => {
+        if(m.teamAId) m.teamAId = r(m.teamAId);
+        if(m.teamBId) m.teamBId = r(m.teamBId);
+      });
+      (st.standings || []).forEach(x => { if(x && x.clubId) x.clubId = r(x.clubId); });
+    });
+  });
+  (state.seasons || []).forEach(s => {
+    if(s.points && Array.isArray(s.points.clubIds)) s.points.clubIds = uniq(s.points.clubIds.map(r));
+  });
+  (state.clubs || []).forEach(c => {
+    if(Array.isArray(c.relatedIds)) c.relatedIds = uniq(c.relatedIds.map(r)).filter(id => id !== c.id);
+  });
+}
+/* 把「同一支队伍的两份记录」合成一份，返回合并掉的数量 */
+function dedupeSeedClubDuplicates(){
+  const seedIds = seedClubIds();
+  if(!seedIds.size) return 0;
+  const alias = seedClubAliases(state);
+  // 先清掉指向已不存在队伍的别名
+  Object.keys(alias).forEach(sid => {
+    if(!state.clubs.some(c => c.id === alias[sid])) delete alias[sid];
+  });
+  const localByKey = new Map();
+  state.clubs.forEach(c => {
+    if(seedIds.has(c.id)) return;                 // 本机原有的那份
+    const k = clubKey(c);
+    if(k && !localByKey.has(k)) localByKey.set(k, c.id);
+  });
+  const drop = new Set();
+  state.clubs.forEach(c => {
+    if(!seedIds.has(c.id)) return;
+    const localId = localByKey.get(clubKey(c));
+    if(localId && localId !== c.id){
+      alias[c.id] = localId;                       // 内置 id → 本机 id
+      drop.add(c.id);
+    }
+  });
+  if(!drop.size) return 0;
+  state.clubs = state.clubs.filter(c => !drop.has(c.id));
+  remapStateClubRefs(alias);
+  return drop.size;
+}
+
+/* 把内置数据合并进当前数据：只补缺失，不覆盖已有内容 */
+function mergeSeedData(target, seed){
+  const removed = seedRemovedSet(target);
+  let added = 0, restored = 0;
+  const hasId = (arr, id) => (arr || []).some(x => x && x.id === id);
+
+  // 同一支队伍在本地可能已经存在、只是 id 不同（例如早期用「快速导入」建的）。
+  // 这里按简称/名字建立「内置 id → 本地 id」映射，避免合并后出现两份同名队伍，
+  // 同时把内置赛事里的队伍引用改到本地 id 上。
+  const norm = s => String(s == null ? '' : s).trim().toLowerCase();
+  const localByKey = new Map();
+  (target.clubs || []).forEach(c => {
+    [norm(c.shortName), norm(c.name)].forEach(k => { if(k && !localByKey.has(k)) localByKey.set(k, c.id); });
+  });
+  const alias = seedClubAliases(target);
+  const clubIdMap = new Map();
+  Object.keys(alias).forEach(sid => {
+    if(hasId(target.clubs, alias[sid])) clubIdMap.set(sid, alias[sid]);
+    else delete alias[sid];
+  });
+  (seed.clubs || []).forEach(c => {
+    if(hasId(target.clubs, c.id)) return;
+    if(clubIdMap.has(c.id)) return;
+    const localId = localByKey.get(norm(c.shortName)) || localByKey.get(norm(c.name));
+    if(localId && localId !== c.id){
+      clubIdMap.set(c.id, localId);
+      alias[c.id] = localId;
+    }
+  });
+  const remapClubRefs = obj => {
+    const r = id => clubIdMap.get(id) || id;
+    if(Array.isArray(obj.teamIds)) obj.teamIds = obj.teamIds.map(r);
+    if(Array.isArray(obj.finalStandings)) obj.finalStandings.forEach(x => { if(x && x.clubId) x.clubId = r(x.clubId); });
+    if(obj.points && Array.isArray(obj.points.clubIds)) obj.points.clubIds = obj.points.clubIds.map(r);
+    (obj.stages || []).forEach(st => {
+      if(st.config && Array.isArray(st.config.groups)) st.config.groups.forEach(g => {
+        if(Array.isArray(g.teamIds)) g.teamIds = g.teamIds.map(r);
+      });
+      if(st.config && st.config.seeds && typeof st.config.seeds === 'object'){
+        Object.keys(st.config.seeds).forEach(k => { if(st.config.seeds[k]) st.config.seeds[k] = r(st.config.seeds[k]); });
+      }
+      (st.matches || []).forEach(m => {
+        if(m.teamAId) m.teamAId = r(m.teamAId);
+        if(m.teamBId) m.teamBId = r(m.teamBId);
+      });
+      (st.standings || []).forEach(x => { if(x && x.clubId) x.clubId = r(x.clubId); });
+    });
+    return obj;
+  };
+  const seedTournamentCopy = t => remapClubRefs(clone(t));
+
+  (seed.clubs || []).forEach(c => {
+    if(removed.has(c.id)) return;
+    if(clubIdMap.has(c.id)) return;            // 本地已有同名队伍，不重复添加
+    if(!hasId(target.clubs, c.id)){ target.clubs.push(clone(c)); added++; }
+  });
+  (seed.seasons || []).forEach(s => {
+    if(removed.has(s.id)) return;
+    if(!hasId(target.seasons, s.id)){ target.seasons.push(clone(s)); added++; }
+  });
+  (seed.tournaments || []).forEach(t => {
+    if(removed.has(t.id)) return;
+    const local = (target.tournaments || []).find(x => x.id === t.id);
+    if(!local){
+      target.tournaments.push(seedTournamentCopy(t));
+      added++;
+      return;
+    }
+    if(!Array.isArray(local.stages)) local.stages = [];
+    (t.stages || []).forEach(st => {
+      if(removed.has(st.id)) return;
+      const lst = local.stages.find(x => x.id === st.id);
+      if(!lst){ local.stages.push(remapClubRefs(clone(st))); restored++; return; }
+      if(!Array.isArray(lst.matches)) lst.matches = [];
+      (st.matches || []).forEach(m => {
+        if(removed.has(m.id)) return;
+        if(!lst.matches.some(x => x && x.id === m.id)){ lst.matches.push(remapClubRefs(clone({ stages: [{ matches: [m] }] })).stages[0].matches[0]); restored++; }
+      });
+      // 分组 / 轮数等配置只在缺失时补
+      if(st.config && typeof st.config === 'object'){
+        if(!lst.config || typeof lst.config !== 'object') lst.config = {};
+        if(Array.isArray(st.config.groups) && !Array.isArray(lst.config.groups)) lst.config.groups = clubIdMap.size ? remapClubRefs(clone({ stages: [{ config: { groups: st.config.groups } }] })).stages[0].config.groups : clone(st.config.groups);
+        if(st.config.rounds && !lst.config.rounds) lst.config.rounds = st.config.rounds;
+        if(st.config.seeds && !lst.config.seeds){
+          lst.config.seeds = remapClubRefs(clone({ stages: [{ config: { seeds: st.config.seeds } }] })).stages[0].config.seeds;
+        }
+      }
+    });
+  });
+  return { added, restored };
+}
+
+/* 启动时补齐内置数据；返回是否改动了 state */
+function applySeedOnBoot(){
+  const b = getSeedBundle();
+  if(!b) return false;
+  if(state.meta && state.meta.seedAutoMerge === false) return false;
+  let changed = false;
+  if(!hasAnyData(state)){
+    state = normalizeState(clone(b._state));
+    state.meta.seedBundle = true;
+    changed = true;
+  } else {
+    // 先把「同一支队伍的两份记录」合成一份，再补缺失，避免队伍数量翻倍
+    try{
+      if(dedupeSeedClubDuplicates() > 0) changed = true;
+    }catch(e){ console.warn('重复队伍合并失败', e); }
+    const r = mergeSeedData(state, b._state);
+    if((r.added + r.restored) > 0) changed = true;
+  }
+  if(!state.meta || typeof state.meta !== 'object') state.meta = {};
+  if(state.meta.seedVersion !== b.version){ state.meta.seedVersion = b.version; changed = true; }
+  if(changed){
+    try{ saveState(); }catch(e){ console.warn('内置数据写入失败', e); }
+  }
+  return changed;
+}
+
+function seedMergeNow(){
+  const b = getSeedBundle();
+  if(!b){ toast('没有内置数据集', 'err'); return; }
+  const dup = dedupeSeedClubDuplicates();
+  const r = mergeSeedData(state, b._state);
+  state.meta.seedVersion = b.version;
+  saveState();
+  renderStoragePanel();
+  go(view);
+  toast('内置数据已补齐：新增 ' + r.added + ' 项，补回 ' + r.restored + ' 条阶段/对局' +
+    (dup ? '，合并重复队伍 ' + dup + ' 支' : ''));
+}
+function seedReplaceAll(){
+  const b = getSeedBundle();
+  if(!b){ toast('没有内置数据集', 'err'); return; }
+  const c = dataCounts(b._state);
+  confirmDialog('用内置数据覆盖',
+    '将用内置数据集覆盖当前数据（会先自动存一份快照）。\n' + countsText(c) + '\n确定继续吗？', async () => {
+      await takeSnapshot('覆盖内置数据前');
+      state = normalizeState(clone(b._state));
+      state.meta.seedBundle = true;
+      state.meta.seedRemoved = [];
+      state.meta.seedClubAlias = {};
+      state.meta.seedVersion = b.version;
+      state.meta.seedAutoMerge = true;
+      saveState();
+      currentSeasonId = null; currentTournamentId = null; currentClubId = null;
+      closeModal('modal-storage');
+      go('dashboard');
+      toast('已用内置数据覆盖', 'ok');
+    });
+}
+function dedupeClubsNow(){
+  const n = dedupeSeedClubDuplicates();
+  if(!n){ toast('没有发现重复队伍'); return; }
+  saveState();
+  renderStoragePanel();
+  go(view);
+  toast('已合并 ' + n + ' 支重复队伍', 'ok');
+}
+function seedToggleAuto(){
+  state.meta.seedAutoMerge = (state.meta.seedAutoMerge === false);
+  saveState();
+  renderStoragePanel();
+  toast(state.meta.seedAutoMerge ? '已开启启动时自动补齐内置数据' : '已关闭启动时自动补齐');
+}
+function downloadSeed(){
+  const b = getSeedBundle();
+  if(!b){ toast('没有内置数据集', 'err'); return; }
+  downloadJson(b.data, 'thegame-seed-data.json');
+}
+function downloadJson(obj, filename){
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ---------------- IndexedDB 低层 ---------------- */
+let dbPromise = null;
+function openDb(){
+  if(dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    if(!window.indexedDB){ reject(new Error('浏览器不支持或已禁用 IndexedDB')); return; }
+    let settled = false;
+    const timer = setTimeout(() => {
+      if(settled) return;
+      settled = true;
+      reject(new Error('打开超时（可能被浏览器安全策略阻止）'));
+    }, IDB_TIMEOUT);
+    let req;
+    try{ req = indexedDB.open(DB_NAME, DB_VER); }
+    catch(e){ clearTimeout(timer); settled = true; reject(e); return; }
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if(!db.objectStoreNames.contains(KV_STORE)) db.createObjectStore(KV_STORE);
+      if(!db.objectStoreNames.contains(SNAP_STORE)){
+        const os = db.createObjectStore(SNAP_STORE, { keyPath: 'id', autoIncrement: true });
+        os.createIndex('ts', 'ts');
+      }
+      if(!db.objectStoreNames.contains(SNAPDATA_STORE)) db.createObjectStore(SNAPDATA_STORE);
+    };
+    req.onsuccess = () => {
+      if(settled) return;
+      settled = true; clearTimeout(timer);
+      const db = req.result;
+      db.onversionchange = () => { try{ db.close(); }catch(e){} };
+      resolve(db);
+    };
+    req.onerror = () => {
+      if(settled) return;
+      settled = true; clearTimeout(timer);
+      reject(req.error || new Error('IndexedDB 打开失败'));
+    };
+    req.onblocked = () => {
+      if(settled) return;
+      settled = true; clearTimeout(timer);
+      reject(new Error('IndexedDB 被其他标签页占用'));
+    };
+  }).catch(e => {
+    storage.idbError = (e && e.message) || String(e);
+    dbPromise = null;
+    throw e;
+  });
+  return dbPromise;
+}
+function idbGet(store, key){
+  return openDb().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readonly');
+    const rq = tx.objectStore(store).get(key);
+    rq.onsuccess = () => resolve(rq.result);
+    rq.onerror = () => reject(rq.error || new Error('读取失败'));
+  }));
+}
+function idbPut(store, key, value){
+  return openDb().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite');
+    const os = tx.objectStore(store);
+    const rq = key === null ? os.put(value) : os.put(value, key);
+    tx.oncomplete = () => resolve(rq.result);
+    tx.onerror = () => reject(tx.error || rq.error || new Error('写入失败'));
+    tx.onabort = () => reject(tx.error || new Error('写入被中止'));
+  }));
+}
+function idbDelete(store, key){
+  return openDb().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite');
+    tx.objectStore(store).delete(key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error('删除失败'));
+  }));
+}
+function idbGetAll(store){
+  return openDb().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readonly');
+    const rq = tx.objectStore(store).getAll();
+    rq.onsuccess = () => resolve(rq.result || []);
+    rq.onerror = () => reject(rq.error || new Error('读取失败'));
+  }));
+}
+
+/* ---------------- 启动读取 ----------------
+   先用 localStorage 同步把界面拉起来，IndexedDB 在后台补齐：
+   某些环境（隐私模式 / 旧版浏览器 / 沙箱预览）IndexedDB 会卡住不回调，
+   绝不能让它挡住首屏渲染。
+------------------------------------------ */
+function storageInit(){
+  storage.origin = currentOriginLabel();
+  let lsRaw = null, lsState = null, lsSavedAt = 0, brokenRaw = '';
+  try{
+    lsRaw = localStorage.getItem(STORAGE_KEY);
+    storage.lsOk = true;
+  }catch(e){
+    storage.lsOk = false;
+    storage.lsError = (e && e.message) || String(e);
+  }
+  if(lsRaw){
+    try{
+      lsState = JSON.parse(lsRaw);
+      lsSavedAt = readMetaSavedAt();
+    }catch(e){
+      brokenRaw = lsRaw;
+      storage.notice = {
+        type: 'err',
+        html: '本机存档（localStorage）内容已损坏，无法直接读取。原始内容已另存备份，请打开「存储与备份」从历史快照恢复，或导入之前导出的 JSON。'
+      };
+    }
+  }
+
+  if(brokenRaw){
+    try{
+      storage.brokenKey = STORAGE_KEY + '.broken.' + Date.now();
+      localStorage.setItem(storage.brokenKey, brokenRaw);
+    }catch(e){ /* 空间不够就放弃另存 */ }
+  }
+
+  state = normalizeState(lsState);
+  storage.loadSource = lsState ? 'localStorage' : '新建';
+  storage.loading = false;
+  storage.lastSavedAt = lsSavedAt || 0;
+  storage.chars = lsRaw ? lsRaw.length : 0;
+  updateStoragePill();
+
+  // 后台尝试 IndexedDB（不阻塞首屏）
+  storage.idbHydrating = hydrateIdb(lsSavedAt);
+}
+
+/* 后台：连接 IndexedDB，取更完整/更新的记录，并把当前数据补写进去 */
+async function hydrateIdb(bootLsAt){
+  // IndexedDB 某些环境下会「永不回调」，这里加一道兜底，避免一直显示"正在连接"
+  const watchdog = setTimeout(() => {
+    if(storage.idbOk) return;
+    storage.idbPending = false;
+    storage.idbFailed = true;
+    storage.idbError = storage.idbError || '长时间无响应（可能被浏览器禁用）';
+    updateStoragePill();
+    if(storage.lsOk && hasAnyData(state)){
+      showStorageAlert('warn',
+        'IndexedDB 未能启动（' + esc(storage.idbError) + '），目前使用 localStorage 保存（约 5 MB 上限）。功能不受影响，建议定期导出备份。');
+    }
+    refreshStoragePanelIfOpen();
+  }, 6000);
+  try{
+    await openDb();
+    storage.idbOk = true;
+    storage.idbError = '';
+    storage.idbPending = false;
+    storage.idbFailed = false;
+  }catch(e){
+    clearTimeout(watchdog);
+    storage.idbOk = false;
+    storage.idbPending = false;
+    storage.idbFailed = true;
+    storage.idbError = (e && e.message) || String(e) || '未知原因';
+    updateStoragePill();
+    if(storage.lsOk && hasAnyData(state)){
+      showStorageAlert('warn',
+        'IndexedDB 不可用（' + esc(storage.idbError) + '），当前使用 localStorage 保存（约 5 MB 上限）。功能不受影响，建议定期导出。');
+    }
+    refreshStoragePanelIfOpen();
+    return;
+  }
+  clearTimeout(watchdog);
+  updateStoragePill();
+
+  // 1) IndexedDB 里有比 localStorage 更新的数据 → 采用它（用户还没动手编辑时）
+  try{
+    const rec = await idbGet(KV_STORE, KEY_CURRENT);
+    if(rec && rec.data && !storage.edited && hasAnyData(rec.data) && (rec.savedAt || 0) > (bootLsAt || 0) + 1000){
+      state = normalizeState(rec.data);
+      storage.loadSource = 'IndexedDB';
+      storage.lastSavedAt = rec.savedAt || Date.now();
+      storage.rev = Math.max(storage.rev, rec.rev || 0);
+      persistToLocalStorage();
+      go(view);
+      updateStoragePill();
+    }
+  }catch(e){ /* 读取失败就继续用 localStorage 的数据 */ }
+
+  // 2) 保证 IndexedDB 主存和当前数据一致（首次使用时相当于迁移）
+  try{
+    const payload = JSON.stringify(state);
+    await idbPut(KV_STORE, KEY_CURRENT, {
+      savedAt: storage.lastSavedAt || Date.now(),
+      rev: storage.rev,
+      origin: storage.origin,
+      chars: payload.length,
+      data: JSON.parse(payload)
+    });
+    storage.idbError = '';
+  }catch(e){
+    storage.idbError = (e && e.message) || String(e);
+    updateStoragePill();
+  }
+
+  // 3) 快照信息
+  try{
+    const snaps = await idbGetAll(SNAP_STORE);
+    storage.snapCount = snaps.length;
+    storage.snapAt = snaps.reduce((m, x) => Math.max(m, x.ts || 0), 0);
+    if(storage.snapCount && !hasAnyData(state) && !storage.edited){
+      showStorageAlert('warn',
+        '当前数据是空的，但检测到 <b>' + storage.snapCount + '</b> 个历史快照（最近一次：' + fmtDateTime(storage.snapAt) +
+        '）。可能是浏览器数据被清理或换了一种打开方式，建议从快照恢复。');
+    }
+    // 第一次使用（尤其是刚载入内置数据）先留一份基线快照
+    if(!storage.snapCount && hasAnyData(state)){
+      takeSnapshot('初始');
+    }
+  }catch(e){ storage.snapCount = 0; }
+  updateStoragePill();
+  refreshStoragePanelIfOpen();
+}
+function refreshStoragePanelIfOpen(){
+  const m = $('modal-storage');
+  if(m && m.classList.contains('open')) renderStoragePanel();
+}
+
+function persistToLocalStorage(){
+  try{
+    const raw = JSON.stringify(state);
+    localStorage.setItem(STORAGE_KEY, raw);
+    localStorage.setItem(STORAGE_META_KEY, JSON.stringify({ savedAt: storage.lastSavedAt || Date.now(), rev: storage.rev, origin: storage.origin }));
+    storage.lsOk = true; storage.lsError = '';
+    storage.chars = raw.length;
+    storage.lastLocalAt = Date.now();
+  }catch(e){
+    storage.lsOk = false;
+    storage.lsError = (e && e.message) || String(e);
+  }
+  updateStoragePill();
+}
+
+function hasAnyData(s){
+  return !!(s && ((s.clubs || []).length || (s.seasons || []).length || (s.tournaments || []).length));
+}
+function readMetaSavedAt(){
+  try{
+    const meta = JSON.parse(localStorage.getItem(STORAGE_META_KEY) || 'null');
+    return (meta && meta.savedAt) || 0;
+  }catch(e){ return 0; }
+}
+
+/* ---------------- 写入 ---------------- */
 function saveState(){
-  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-  catch(e){ toast('保存失败：' + e.message, 'err'); }
+  if(!state) state = defaultState();
+  storage.rev++;
+  storage.edited = true;
+  const now = Date.now();
+  let payload;
+  try{
+    payload = JSON.stringify(state);
+  }catch(e){
+    showStorageAlert('err', '数据序列化失败（可能含有无法保存的内容）：' + esc((e && e.message) || e));
+    return;
+  }
+  storage.chars = payload.length;
+  storage.bytes = payload.length * 2;
+  storage.lastSavedAt = now;
+
+  // 1) localStorage 镜像：同步写入，关掉页面也不会丢最后一步
+  let lsErr = null;
+  try{
+    localStorage.setItem(STORAGE_KEY, payload);
+    localStorage.setItem(STORAGE_META_KEY, JSON.stringify({ savedAt: now, rev: storage.rev, origin: storage.origin }));
+    storage.lsOk = true; storage.lsError = '';
+    storage.lastLocalAt = now;
+  }catch(e){
+    lsErr = e;
+    storage.lsOk = false;
+    storage.lsError = (e && e.name === 'QuotaExceededError')
+      ? 'localStorage 容量已满（约 5 MB）'
+      : ((e && e.message) || String(e));
+  }
+
+  // 2) IndexedDB 主存：防抖写入，避免连续编辑卡顿
+  scheduleIdbWrite(payload, now);
+
+  if(lsErr && !storage.idbOk){
+    showStorageAlert('err',
+      '数据写入失败：' + esc(storage.lsError) + '。当前修改只存在于这个页面里，<b>关闭页面就会丢失</b>，请立即导出备份。');
+  } else if(lsErr){
+    showStorageAlert('warn',
+      '浏览器 localStorage 写入失败（' + esc(storage.lsError) + '），已自动改用 IndexedDB 主存，数据仍会保存。建议导出一次备份。');
+  } else {
+    if(!storage.otherTabAt || now - storage.otherTabAt > 30000) hideStorageAlert();
+  }
+  updateStoragePill();
+  announceSave(now);
+  maybeSnapshot(now);
+}
+
+function scheduleIdbWrite(payload, savedAt){
+  if(!storage.idbOk){ return; }
+  storage.pendingPayload = payload;
+  storage.pendingSavedAt = savedAt;
+  if(storage.writeTimer) clearTimeout(storage.writeTimer);
+  storage.writeTimer = setTimeout(() => { storage.writeTimer = null; flushIdbWrite(); }, 250);
+}
+function flushIdbWrite(){
+  const payload = storage.pendingPayload;
+  if(payload == null) return Promise.resolve();
+  storage.pendingPayload = null;
+  let data;
+  try{ data = JSON.parse(payload); }
+  catch(e){ return Promise.resolve(); }
+  return idbPut(KV_STORE, KEY_CURRENT, {
+    savedAt: storage.pendingSavedAt || Date.now(),
+    rev: storage.rev,
+    origin: storage.origin,
+    chars: payload.length,
+    data: data
+  }).then(() => {
+    storage.idbOk = true; storage.idbError = '';
+    updateStoragePill();
+  }).catch(e => {
+    storage.idbError = (e && e.message) || String(e);
+    // 连接可能已失效：丢弃缓存的连接，下一次写入自动重连
+    try{ if(dbPromise) dbPromise.then(db => { try{ db.close(); }catch(err){} }).catch(() => {}); }catch(err){}
+    dbPromise = null;
+    if(storage.lsOk) showStorageAlert('warn', 'IndexedDB 写入失败（' + esc(storage.idbError) + '），当前使用 localStorage 镜像保存。');
+    else showStorageAlert('err', '两种存储都写入失败：' + esc(storage.idbError) + '。请立即导出备份。');
+    updateStoragePill();
+  });
+}
+function flushPendingSave(){
+  if(storage.writeTimer){ clearTimeout(storage.writeTimer); storage.writeTimer = null; }
+  if(storage.pendingPayload != null) flushIdbWrite();
+}
+
+/* ---------------- 快照 ---------------- */
+function maybeSnapshot(now){
+  if(storage.loading) return;
+  if(!storage.idbOk) return;
+  if(now - storage.snapAt < SNAP_INTERVAL) return;
+  storage.snapAt = now;
+  takeSnapshot('自动');
+}
+async function takeSnapshot(reason){
+  if(!storage.idbOk){
+    if(storage.idbFailed){
+      toast('IndexedDB 不可用，无法创建快照；请用「导出」保存备份', 'err');
+      return null;
+    }
+    try{ await openDb(); storage.idbOk = true; storage.idbFailed = false; }
+    catch(e){ toast('无法创建快照：' + ((e && e.message) || e), 'err'); return null; }
+  }
+  const now = Date.now();
+  let payload;
+  try{ payload = JSON.stringify(state); }
+  catch(e){ toast('快照失败：数据无法序列化', 'err'); return null; }
+  const meta = {
+    ts: now,
+    reason: reason || '手动',
+    origin: storage.origin,
+    counts: dataCounts(state),
+    chars: payload.length
+  };
+  try{
+    const id = await idbPut(SNAP_STORE, null, meta);
+    await idbPut(SNAPDATA_STORE, id, JSON.parse(payload));
+    storage.snapCount++;
+    storage.snapAt = now;
+    await pruneSnapshots();
+    if(reason && reason !== '自动') toast('已创建快照');
+    return id;
+  }catch(e){
+    toast('快照失败：' + ((e && e.message) || e), 'err');
+    return null;
+  }
+  finally{
+    refreshStoragePanelIfOpen();
+  }
+}
+async function pruneSnapshots(){
+  try{
+    const all = await idbGetAll(SNAP_STORE);
+    all.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    while(all.length > SNAP_LIMIT){
+      const old = all.shift();
+      await idbDelete(SNAP_STORE, old.id);
+      try{ await idbDelete(SNAPDATA_STORE, old.id); }catch(e){}
+    }
+    storage.snapCount = all.length;
+  }catch(e){ /* 清理失败不影响主流程 */ }
+}
+async function listSnapshots(){
+  if(!storage.idbOk){
+    if(storage.idbFailed) return [];
+    try{ await openDb(); storage.idbOk = true; storage.idbFailed = false; }
+    catch(e){ return []; }
+  }
+  const all = await idbGetAll(SNAP_STORE);
+  all.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  storage.snapCount = all.length;
+  return all;
+}
+async function restoreSnapshot(id){
+  let data;
+  try{ data = await idbGet(SNAPDATA_STORE, id); }
+  catch(e){ toast('快照读取失败：' + ((e && e.message) || e), 'err'); return; }
+  if(!data){ toast('快照内容已丢失', 'err'); return; }
+  confirmDialog('恢复历史快照',
+    '将用该快照覆盖当前数据（当前数据会先自动存一份快照）。\n' + countsText(dataCounts(data)) + '\n\n确定恢复吗？',
+    async () => {
+      await takeSnapshot('恢复前');
+      state = normalizeState(data);
+      saveState();
+      currentSeasonId = null; currentTournamentId = null; currentClubId = null;
+      closeModal('modal-storage');
+      go('dashboard');
+      toast('已恢复到所选快照', 'ok');
+    });
+}
+
+/* ---------------- 存储状态 UI ---------------- */
+function updateStoragePill(){
+  const pill = $('storage-pill');
+  if(!pill) return;
+  const txt = $('storage-pill-text');
+  let cls = 'ok', label = '';
+  const bothOk = storage.lsOk && storage.idbOk;
+  if(!storage.lsOk && !storage.idbOk && !storage.idbPending){
+    cls = 'err'; label = '未保存';
+  } else if(storage.lastSavedAt){
+    label = '已保存 ' + fmtTime(storage.lastSavedAt);
+    if(!bothOk && !storage.idbPending) cls = 'warn';
+  } else {
+    label = bothOk ? '存储就绪' : (storage.idbPending && storage.lsOk ? '已就绪' : '兼容模式');
+    if(!bothOk && !storage.idbPending) cls = 'warn';
+  }
+  pill.className = 'storage-pill ' + cls;
+  if(txt) txt.textContent = label;
+  pill.title = '存储状态：' + label + '\n当前地址：' + storage.origin +
+    '\nIndexedDB：' + (storage.idbOk ? '可用' : (storage.idbPending ? '连接中…' : '不可用' + (storage.idbError ? '（' + storage.idbError + '）' : ''))) +
+    '\nlocalStorage：' + (storage.lsOk ? '可用' : '不可用' + (storage.lsError ? '（' + storage.lsError + '）' : ''));
+}
+function showStorageAlert(type, html){
+  const el = $('storage-alert');
+  if(!el) return;
+  el.className = 'storage-alert ' + type;
+  el.innerHTML = '<span class="sa-icon">' + (type === 'err' ? '⚠' : type === 'warn' ? '!' : 'i') + '</span>' +
+    '<span class="sa-text">' + html + '</span>' +
+    '<button class="btn btn-sm" onclick="openStoragePanel()">存储与备份</button>' +
+    '<button class="btn btn-sm btn-danger-text" onclick="exportData()">立即导出</button>' +
+    '<span class="sa-close" onclick="hideStorageAlert()" title="关闭">×</span>';
+  el.style.display = '';
+}
+function hideStorageAlert(){
+  const el = $('storage-alert');
+  if(el) el.style.display = 'none';
+}
+function showStorageNotice(){
+  if(storage.notice){
+    showStorageAlert(storage.notice.type || 'info', storage.notice.html);
+    storage.notice = null;
+    return;
+  }
+  // 只提示「已确认」的问题；IndexedDB 还在连接中不算异常
+  if(!storage.lsOk && hasAnyData(state)){
+    showStorageAlert('err',
+      'localStorage 不可用（' + esc(storage.lsError || '未知原因') + '）。如果 IndexedDB 可用数据仍会保存，否则请立即导出备份。');
+  } else if(storage.idbFailed && hasAnyData(state)){
+    showStorageAlert('warn',
+      'IndexedDB 不可用（' + esc(storage.idbError || '未知原因') + '），当前使用 localStorage 保存（约 5 MB 上限）。功能不受影响，建议定期导出。');
+  }
+}
+
+/* ---------------- 存储面板 ---------------- */
+function openStoragePanel(){
+  openModal('modal-storage');
+  renderStoragePanel();
+}
+async function renderStoragePanel(){
+  const body = $('storage-panel-body');
+  if(!body) return;
+  const c = dataCounts(state);
+  const usedChars = storage.chars || JSON.stringify(state).length;
+  let html = '';
+  html += '<div class="store-grid">' +
+    kvHtml('保存位置', esc(storage.origin)) +
+    kvHtml('数据规模', esc(countsText(c))) +
+    kvHtml('当前大小', fmtBytes(usedChars * 2) + ' <span class="muted">(' + usedChars.toLocaleString() + ' 字符)</span>') +
+    kvHtml('上次保存', storage.lastSavedAt ? fmtDateTime(storage.lastSavedAt) : '尚未保存') +
+    kvHtml('存储引擎', (storage.idbOk ? '<span class="ok-text">IndexedDB 主存</span>' : (storage.idbPending ? '<span class="muted">IndexedDB 连接中…</span>' : '<span class="warn-text">IndexedDB 不可用</span>')) +
+      ' ＋ ' + (storage.lsOk ? '<span class="ok-text">localStorage 镜像</span>' : '<span class="warn-text">localStorage 不可用</span>')) +
+    kvHtml('浏览器配额', '<span id="store-quota">—</span>') +
+    kvHtml('历史快照', '<span id="store-snapcount">' + (storage.snapCount || 0) + '</span> 个') +
+    kvHtml('启动来源', esc(storage.loadSource || '—')) +
+    '</div>';
+  if(storage.idbError || storage.lsError){
+    html += '<div class="store-errs">' +
+      (storage.idbError ? '<div>IndexedDB：' + esc(storage.idbError) + '</div>' : '') +
+      (storage.lsError ? '<div>localStorage：' + esc(storage.lsError) + '</div>' : '') +
+      '</div>';
+  }
+  html += '<p class="muted store-tip">数据属于「当前浏览器 + 当前打开地址」。用 file:// 打开和用 GitHub Pages / 本地服务器打开，会是相互独立的两份数据——需要带走数据时，请用「导出」再在另一处「导入」。</p>';
+  html += '<div class="store-actions">' +
+    '<button class="btn btn-sm btn-primary" onclick="takeSnapshot(\'手动\')">立即快照</button>' +
+    '<button class="btn btn-sm" onclick="exportData()">导出 JSON</button>' +
+    '<button class="btn btn-sm" onclick="triggerImport()">导入 JSON</button>' +
+    '<button class="btn btn-sm" onclick="renderStoragePanel()">刷新</button>' +
+    '</div>';
+
+  // 内置静态数据集（写死在 data/seed-data.js 里，清缓存/换架构都不影响）
+  const seedBundle = getSeedBundle();
+  if(seedBundle){
+    const sc = seedBundle.stats || dataCounts(seedBundle._state);
+    const auto = !(state.meta && state.meta.seedAutoMerge === false);
+    html += '<h4 class="snap-title">内置数据集 <span class="muted" style="font-weight:400">（随网站一起发布，不依赖浏览器存储）</span></h4>';
+    html += '<div class="store-grid">' +
+      kvHtml('名称 / 版本', esc(seedBundle.name || '内置数据集') + ' <span class="muted">' + esc(seedBundle.version || '') + '</span>') +
+      kvHtml('规模', esc(countsText(sc)) + ' · ' + sc.clubs + ' 队伍 · ' + sc.seasons + ' 赛年') +
+      kvHtml('启动时自动补齐', auto ? '<span class="ok-text">已开启</span>' : '<span class="warn-text">已关闭</span>') +
+      kvHtml('生成时间', seedBundle.generatedAt ? fmtDateTime(Date.parse(seedBundle.generatedAt)) : '—') +
+      '</div>';
+    html += '<div class="store-actions">' +
+      '<button class="btn btn-sm btn-primary" onclick="seedMergeNow()">补齐缺失数据</button>' +
+      '<button class="btn btn-sm" onclick="seedReplaceAll()">用内置数据覆盖</button>' +
+      '<button class="btn btn-sm" onclick="dedupeClubsNow()">合并重复队伍</button>' +
+      '<button class="btn btn-sm" onclick="seedToggleAuto()">' + (auto ? '关闭自动补齐' : '开启自动补齐') + '</button>' +
+      '<button class="btn btn-sm" onclick="downloadSeed()">下载内置 JSON</button>' +
+      '</div>';
+  }
+
+  html += '<h4 class="snap-title">历史快照（最多 ' + SNAP_LIMIT + ' 个，自动每 ' + (SNAP_INTERVAL / 60000) + ' 分钟一份）</h4>' +
+    '<div id="store-snaps"><div class="muted" style="padding:6px 2px">正在读取快照…</div></div>';
+  body.innerHTML = html;
+
+  // 面板先出来，耗时信息（配额 / 快照）异步补上，避免 IndexedDB 卡住整个弹窗
+  fillStoragePanelAsync();
+}
+async function fillStoragePanelAsync(){
+  try{
+    if(navigator.storage && navigator.storage.estimate){
+      const e = await Promise.race([navigator.storage.estimate(), new Promise(r => setTimeout(() => r(null), 1500))]);
+      const el = $('store-quota');
+      if(el && e && e.quota) el.innerHTML = fmtBytes(e.usage || 0) + ' / ' + fmtBytes(e.quota);
+    }
+  }catch(e){}
+  let snaps = null;
+  if(storage.idbOk || !storage.idbFailed){
+    snaps = await Promise.race([listSnapshots().catch(() => []), new Promise(r => setTimeout(() => r(null), 2500))]);
+  } else {
+    snaps = [];
+  }
+  const el = $('store-snaps');
+  if(!el) return;
+  if(snaps === null){
+    el.innerHTML = '<div class="empty" style="padding:18px">IndexedDB 响应较慢，快照暂时读不出来；可点「刷新」重试，或先导出 JSON 备份。</div>';
+    return;
+  }
+  const cnt = $('store-snapcount');
+  if(cnt) cnt.textContent = snaps.length;
+  if(!storage.idbOk){
+    el.innerHTML = '<div class="empty" style="padding:18px">' +
+      (storage.idbPending ? 'IndexedDB 正在连接，稍后刷新即可看到快照。' : '当前环境无法使用 IndexedDB，历史快照不可用。请用「导出 JSON」保存备份。') +
+      '</div>';
+    return;
+  }
+  if(!snaps.length){
+    el.innerHTML = '<div class="empty" style="padding:18px">还没有历史快照。点击「立即快照」可手动保存一份。</div>';
+    return;
+  }
+  let html = '<div class="table-wrap"><table class="plain"><thead><tr><th>时间</th><th>来源</th><th>规模</th><th style="width:120px">操作</th></tr></thead><tbody>';
+  snaps.forEach(sn => {
+    html += '<tr>' +
+      '<td class="nowrap">' + fmtDateTime(sn.ts) + '</td>' +
+      '<td>' + esc(sn.reason || '—') + '</td>' +
+      '<td class="nowrap">' + countsText(sn.counts || {}) + ' · ' + fmtBytes((sn.chars || 0) * 2) + '</td>' +
+      '<td class="nowrap"><button class="btn btn-sm" onclick="restoreSnapshot(' + sn.id + ')">恢复</button> ' +
+      '<button class="btn btn-sm btn-danger-text" onclick="deleteSnapshot(' + sn.id + ')">删</button></td></tr>';
+  });
+  html += '</tbody></table></div>';
+  el.innerHTML = html;
+}
+function kvHtml(k, v){
+  return '<div class="kv"><span class="kv-k">' + k + '</span><span class="kv-v">' + v + '</span></div>';
+}
+async function deleteSnapshot(id){
+  confirmDialog('删除快照', '确定删除这条历史快照吗？', async () => {
+    try{ await idbDelete(SNAP_STORE, id); }catch(e){}
+    try{ await idbDelete(SNAPDATA_STORE, id); }catch(e){}
+    renderStoragePanel();
+    toast('已删除快照');
+  });
+}
+
+/* ---------------- 多标签页保护 ---------------- */
+let syncChannel = null;
+function initMultiTabGuard(){
+  try{
+    if(typeof BroadcastChannel === 'function'){
+      syncChannel = new BroadcastChannel('thegame-sync');
+      syncChannel.onmessage = ev => {
+        const d = ev.data || {};
+        if(d.type !== 'save' || d.tab === TAB_ID) return;
+        onOtherTabSave(d.savedAt || Date.now());
+      };
+    }
+  }catch(e){ syncChannel = null; }
+  window.addEventListener('storage', e => {
+    if(e.key === STORAGE_KEY && e.newValue) onOtherTabSave(Date.now());
+  });
+  window.addEventListener('pagehide', () => { flushPendingSave(); });
+  document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'hidden') flushPendingSave(); });
+}
+function announceSave(now){
+  if(!syncChannel) return;
+  if(now - storage.lastAnnounce < 1500) return;
+  storage.lastAnnounce = now;
+  try{ syncChannel.postMessage({ type: 'save', tab: TAB_ID, savedAt: now, counts: dataCounts(state) }); }catch(e){}
+}
+function onOtherTabSave(ts){
+  if(ts && ts <= storage.lastSavedAt + 1000) return;
+  storage.otherTabAt = ts || Date.now();
+  const el = $('storage-alert');
+  if(!el) return;
+  el.className = 'storage-alert warn';
+  el.innerHTML = '<span class="sa-icon">!</span>' +
+    '<span class="sa-text">另一个标签页刚刚保存了更新的数据。继续在本页编辑可能覆盖它。</span>' +
+    '<button class="btn btn-sm btn-primary" onclick="location.reload()">载入最新</button>' +
+    '<span class="sa-close" onclick="hideStorageAlert()" title="关闭">×</span>';
+  el.style.display = '';
 }
 function toast(msg, type){
   const t = $('toast');
@@ -320,6 +1377,7 @@ function saveClub(){
 function deleteClub(id){
   const c = getClub(id); if(!c) return;
   confirmDialog('删除俱乐部', '确定删除「' + c.name + '」吗？\n相关比赛中的对阵与名次将保留原名称显示为「已删除队伍」。', () => {
+    rememberSeedId(id);
     state.clubs = state.clubs.filter(x => x.id !== id);
     state.clubs.forEach(x => { if(x.relatedIds) x.relatedIds = x.relatedIds.filter(r => r !== id); });
     if(currentClubId === id) currentClubId = null;
@@ -413,6 +1471,7 @@ function onSeasonCopyChange(){
 function deleteSeason(id){
   const s = getSeason(id); if(!s) return;
   confirmDialog('删除赛年', '确定删除「' + s.name + '」吗？\n该赛年下的赛事不会被删除，但将失去赛年归属。', () => {
+    rememberSeedId(id);
     state.seasons = state.seasons.filter(x => x.id !== id);
     state.tournaments.forEach(t => { if(t.seasonId === id) t.seasonId = null; });
     if(currentSeasonId === id) currentSeasonId = null;
@@ -807,6 +1866,20 @@ function tClearTeams(){
 }
 function toggleTeamChip(id){ if(tForm.teams.has(id)) tForm.teams.delete(id); else tForm.teams.add(id); renderTournamentTeamChips(); }
 
+/* 复制赛事的阶段时重新分配 id，并把胜者组/败者组连线改到新 id 上 */
+function reidCopiedStages(stages){
+  (stages || []).forEach(st => {
+    st.id = uid('stg');
+    const map = new Map();
+    (st.matches || []).forEach(m => { const nid = uid('m'); map.set(m.id, nid); m.id = nid; });
+    (st.matches || []).forEach(m => {
+      m.nextId = m.nextId ? (map.get(m.nextId) || null) : null;
+      m.loserNextId = m.loserNextId ? (map.get(m.loserNextId) || null) : null;
+    });
+  });
+  return stages;
+}
+
 function saveTournament(){
   const name = $('t-name').value.trim();
   if(!name){ toast('请填写赛事名称', 'err'); return; }
@@ -829,7 +1902,8 @@ function saveTournament(){
   if(tournamentCopyFrom){
     const src = getTournament(tournamentCopyFrom);
     if(src){
-      t.stages = clone(src.stages || []);
+      // 复制赛事必须换新 id：否则两份赛事的阶段/对局 id 相同，编辑会串到另一份去
+      t.stages = reidCopiedStages(clone(src.stages || []));
       t.finalStandings = clone(src.finalStandings || []);
       t.points = clone(src.points || null);
       t.note = src.note || '';
@@ -910,6 +1984,7 @@ function removeTournamentTeam(clubId){
 function deleteCurrentTournament(){
   const t = getTournament(currentTournamentId); if(!t) return;
   confirmDialog('删除赛事', '确定删除「' + t.name + '」吗？此操作不可恢复。', () => {
+    rememberSeedId(t.id);
     state.tournaments = state.tournaments.filter(x => x.id !== t.id);
     currentTournamentId = null; saveState(); toast('已删除'); go('tournaments');
   });
@@ -926,10 +2001,12 @@ function stageCardHtml(t, s){
     '<div class="stage-tools">' +
     '<button class="btn btn-sm' + (qfActive(s.id) ? ' btn-primary' : '') + '" id="qf-btn-' + s.id + '" onclick="toggleQuickFill(\'' + s.id + '\')">快捷填入</button>';
   if(s.format === 'wc'){
-    html += '<button class="btn btn-sm btn-danger-text" onclick="clearStageTeams(\'' + s.id + '\')">清空队伍</button>' +
+    html += '<button class="btn btn-sm" onclick="openBulkEntry(\'' + s.id + '\')">批量录入</button>' +
+      '<button class="btn btn-sm btn-danger-text" onclick="clearStageTeams(\'' + s.id + '\')">清空队伍</button>' +
       '<button class="btn btn-sm btn-danger-text" onclick="deleteStage(\'' + s.id + '\')">删阶段</button>';
   } else {
-    html += '<button class="btn btn-sm" onclick="generateMatches(\'' + s.id + '\')">生成对阵</button>' +
+    html += '<button class="btn btn-sm" onclick="openBulkEntry(\'' + s.id + '\')">批量录入</button>' +
+      '<button class="btn btn-sm" onclick="generateMatches(\'' + s.id + '\')">生成对阵</button>' +
       '<button class="btn btn-sm" onclick="addMatch(\'' + s.id + '\')">+ 对局</button>' +
       '<button class="btn btn-sm btn-danger-text" onclick="clearStageTeams(\'' + s.id + '\')">清空队伍</button>' +
       '<button class="btn btn-sm btn-danger-text" onclick="deleteStage(\'' + s.id + '\')">删阶段</button>';
@@ -1146,6 +2223,7 @@ function updateMatchField(stageId, matchId, field, value){
 }
 function deleteMatch(stageId, matchId){
   const s = findStage(stageId);
+  rememberSeedId(matchId);
   s.matches = (s.matches||[]).filter(m => m.id !== matchId);
   saveState();
   refreshStage(stageId);
@@ -1527,6 +2605,7 @@ function addStage(){
 function deleteStage(stageId){
   const t = findStageOwner(stageId);
   confirmDialog('删除阶段', '确定删除该赛制阶段及其对局吗？', () => {
+    rememberSeedId(stageId);
     t.stages = (t.stages||[]).filter(s => s.id !== stageId);
     saveState(); renderTournamentDetail();
   });
@@ -2355,12 +3434,7 @@ function confirmDialog(title, message, cb){
    数据管理：导出 / 导入 / 清空 / 示例
    ============================================================ */
 function exportData(){
-  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'esports-data.json';
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(a.href);
+  downloadJson(state, 'esports-data.json');
   toast('已导出 esports-data.json');
 }
 function triggerImport(){ $('import-file').click(); }
@@ -2373,11 +3447,9 @@ function onImportFile(e){
     let data;
     try{ data = JSON.parse(reader.result); }
     catch(err){ toast('文件解析失败：不是有效的 JSON', 'err'); return; }
-    confirmDialog('导入数据', '导入将「覆盖」当前全部数据，确定继续吗？\n（文件：' + file.name + '）', () => {
-      state = Object.assign(defaultState(), data);
-      if(!Array.isArray(state.clubs)) state.clubs = [];
-      if(!Array.isArray(state.seasons)) state.seasons = [];
-      if(!Array.isArray(state.tournaments)) state.tournaments = [];
+    confirmDialog('导入数据', '导入将「覆盖」当前全部数据，确定继续吗？\n（文件：' + file.name + '）\n\n当前数据会先自动保存一份快照，可在「存储与备份」里回滚。', async () => {
+      await takeSnapshot('导入前');
+      state = normalizeState(data);
       saveState();
       currentSeasonId = null; currentTournamentId = null; currentClubId = null;
       go('dashboard');
@@ -2387,8 +3459,10 @@ function onImportFile(e){
   reader.readAsText(file);
 }
 function confirmClear(){
-  confirmDialog('清空数据', '确定清空所有本地数据吗？\n此操作不可恢复，建议先「导出」备份。', () => {
+  confirmDialog('清空数据', '确定清空所有本地数据吗？\n清空前会自动保存一份快照，之后可在「存储与备份」里恢复。\n\n注意：网站内置的数据集默认会在下次打开时自动补齐；本次清空后会自动关闭该补齐（可在「存储与备份」里重新开启）。', async () => {
+    await takeSnapshot('清空前');
     state = defaultState();
+    state.meta.seedAutoMerge = false;
     saveState();
     currentSeasonId = null; currentTournamentId = null; currentClubId = null;
     go('dashboard');
@@ -2398,8 +3472,10 @@ function confirmClear(){
 
 /* ---------------- 示例数据 ---------------- */
 function loadSample(){
-  confirmDialog('载入示例数据', '将用一套示例数据「覆盖」当前数据，确定吗？', () => {
+  confirmDialog('载入示例数据', '将用一套示例数据「覆盖」当前数据，确定吗？\n覆盖前会自动保存一份快照。内置数据集的自动补齐会暂时关闭。', async () => {
+    await takeSnapshot('载入示例前');
     state = buildSampleData();
+    state.meta.seedAutoMerge = false;
     saveState();
     currentSeasonId = null; currentTournamentId = null; currentClubId = null;
     go('dashboard');
@@ -2485,10 +3561,392 @@ function buildSampleData(){
 }
 
 /* ============================================================
+   批量录入：纯文本 → 对局；可选截图识别（走用户自己的 AI 接口）
+   ============================================================ */
+const THEGAME_AI_KEY = 'thegame-ai-config-v1';
+let bulkState = { stageId: null, parsed: null, rows: null };
+
+function guessBracket(round){
+  const r = String(round || '');
+  if(/败者组|败者|losers/i.test(r)) return 'losers';
+  if(/总决赛|grand\s*final|^final$/i.test(r)) return 'final';
+  return 'winners';
+}
+function cnNum(s){
+  const map = { '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10 };
+  return String(s == null ? '' : s).replace(/[一二三四五六七八九十]+/g, t => {
+    if(t.length === 1) return String(map[t] || t);
+    if(t === '十') return '10';
+    if(t[0] === '十') return String(10 + (map[t[1]] || 0));
+    if(t[1] === '十') return String((map[t[0]] || 0) * 10 + (map[t[2]] || 0));
+    return t;
+  });
+}
+function normRound(r){
+  let s = cnNum(r).toLowerCase();
+  s = s.replace(/\s+/g, '').replace(/第/g, '').replace(/轮/g, '').replace(/round/g, '');
+  s = s.replace(/^(双败|单败|淘汰赛|小组赛|循环赛|瑞士轮)/, '');
+  return s;
+}
+/* 从行首拆出「轮次」前缀，例如：双败胜者组第一轮 / 胜者组第2轮 / A组第1轮 / 总决赛 */
+function splitRoundPrefix(line){
+  const re = /^((?:小组赛|循环赛|瑞士轮|淘汰赛|双败|单败)?(?:[A-Za-z0-9]组)?(?:胜者组|败者组)?(?:第\s*[0-9一二三四五六七八九十百]+\s*轮|总决赛|决赛|半决赛|四分之一决赛|1\/4决赛|[0-9一二三四五六七八九十]+强))[\s:：\-—，,]*/;
+  const m = line.match(re);
+  if(!m) return null;
+  const rest = line.slice(m[0].length).trim();
+  return { round: m[1].replace(/\s+/g, ''), rest: rest };
+}
+/* 解析纯文本，返回 { matches:[{round,a,scoreA,b,scoreB,line}], errors:[] } */
+function cleanTeamName(s){
+  return String(s == null ? '' : s).replace(/^[（(【\[]+/, '').replace(/[）)】\]。，,.;；]+$/, '');
+}
+function parseBulkText(text){
+  const matches = [], errors = [];
+  let round = '';
+  const lines = String(text == null ? '' : text).split(/\r?\n/);
+  lines.forEach((raw, i) => {
+    let line = raw.trim();
+    if(!line) return;
+    line = line.replace(/^[-*•·]\s*/, '').replace(/^\d+\s*[.、)]\s*/, '');
+    // 【轮次】/ [轮次]
+    const bracket = line.match(/^[【\[]([^】\]]{1,20})[】\]]\s*(.*)$/);
+    if(bracket){
+      round = bracket[1].trim();
+      line = bracket[2].trim();
+    }
+    if(!line) return;
+    const p = splitRoundPrefix(line);
+    if(p){ round = p.round; line = p.rest; }
+    if(!line) return;
+
+    let found = false, m;
+    const chunks = line.split(/[;；|]/).map(x => x.trim()).filter(Boolean);
+    chunks.forEach(chunk => {
+      let hit = false;
+      const scoreRe = /(\S+)\s+(\d{1,2})\s*[:：比\-–—]\s*(\d{1,2})\s+(\S+)/g;
+      while((m = scoreRe.exec(chunk))){
+        matches.push({ round: round || '第1轮', a: cleanTeamName(m[1]), scoreA: m[2], scoreB: m[3], b: cleanTeamName(m[4]), line: i + 1 });
+        hit = true;
+      }
+      if(hit) return;
+      const vsRe = /(\S+)\s+(?:vs|VS|Vs|v|对)\s+(\S+)/g;
+      while((m = vsRe.exec(chunk))){
+        matches.push({ round: round || '第1轮', a: cleanTeamName(m[1]), scoreA: '', scoreB: '', b: cleanTeamName(m[2]), line: i + 1 });
+        hit = true;
+      }
+      if(hit) found = true;
+      else if(chunk) errors.push('第 ' + (i + 1) + ' 行无法识别：' + chunk);
+    });
+    if(found) return;
+
+    // 纯轮次行
+    if(line.length <= 24 && !/\s/.test(line)) { round = line; errors.pop(); return; }
+  });
+  return { matches: matches, errors: errors };
+}
+
+function clubLookupIndex(){
+  const idx = new Map();
+  state.clubs.forEach(c => {
+    [c.shortName, c.name, c.id].forEach(k => {
+      const key = String(k == null ? '' : k).trim().toLowerCase();
+      if(!key) return;
+      if(!idx.has(key)) idx.set(key, []);
+      const arr = idx.get(key);
+      if(arr.indexOf(c) < 0) arr.push(c);
+    });
+  });
+  return idx;
+}
+/* 同一简称可能对应多支队伍：优先选本阶段对阵里出现的，其次选本赛事参赛队伍 */
+function pickBulkClub(list, stageIds, eventIds){
+  if(!list || !list.length) return null;
+  if(stageIds && stageIds.size){
+    const hit = list.find(c => stageIds.has(c.id));
+    if(hit) return hit;
+  }
+  if(eventIds && eventIds.size){
+    const hit = list.find(c => eventIds.has(c.id));
+    if(hit) return hit;
+  }
+  return list[0];
+}
+function findBulkTarget(s, r){
+  if(!r.aId || !r.bId) return null;
+  const ms = s.matches || [];
+  const same = m => (m.teamAId === r.aId && m.teamBId === r.bId) || (m.teamAId === r.bId && m.teamBId === r.aId);
+  const empty = m => (m.scoreA === '' || m.scoreA == null) && (m.scoreB === '' || m.scoreB == null);
+  return ms.find(m => same(m) && empty(m) && normRound(m.round) === normRound(r.round)) ||
+         ms.find(m => same(m) && empty(m)) ||
+         ms.find(m => same(m)) || null;
+}
+
+function openBulkEntry(stageId){
+  const t = getTournament(currentTournamentId);
+  if(!t) return;
+  const stages = t.stages || [];
+  if(!stages.length){ toast('当前赛事还没有阶段，请先添加赛制阶段', 'err'); return; }
+  bulkState = { stageId: stageId || stages[0].id, parsed: null, rows: null };
+  $('bulk-stage').innerHTML = stages.map(s =>
+    '<option value="' + s.id + '"' + (s.id === bulkState.stageId ? ' selected' : '') + '>' +
+    esc(s.name) + ' · ' + esc(FORMAT_LABELS[s.format] || s.format) + ' · ' + (s.matches || []).length + ' 场</option>').join('');
+  $('bulk-text').value = '';
+  const firstStage = findStage(bulkState.stageId);
+  $('bulk-add').checked = !isBracketFormat(firstStage.format) || !(firstStage.matches || []).length;
+  $('bulk-overwrite').checked = false;
+  $('bulk-create').checked = false;
+  $('bulk-preview').innerHTML = '<div class="muted">粘贴或识别出文本后，点「解析预览」查看匹配结果。</div>';
+  $('bulk-status').textContent = '';
+  const cfg = readAiConfig();
+  $('bulk-api-base').value = cfg.base || 'https://api.openai.com/v1';
+  $('bulk-api-model').value = cfg.model || 'gpt-4o-mini';
+  $('bulk-api-key').value = cfg.key || '';
+  $('bulk-image').value = '';
+  $('bulk-ocr-status').textContent = '';
+  openModal('modal-bulk');
+  setTimeout(() => { const el = $('bulk-text'); if(el) el.focus(); }, 40);
+}
+function bulkStageChanged(){
+  const s = findStage($('bulk-stage').value);
+  bulkState.stageId = $('bulk-stage').value;
+  if(s){ $('bulk-add').checked = !isBracketFormat(s.format); }
+  bulkState.parsed = null; bulkState.rows = null;
+  $('bulk-preview').innerHTML = '<div class="muted">阶段已切换，请重新解析。</div>';
+}
+function bulkClear(){
+  $('bulk-text').value = '';
+  $('bulk-preview').innerHTML = '<div class="muted">已清空。</div>';
+  bulkState.parsed = null; bulkState.rows = null;
+}
+
+function bulkPreview(){
+  const stageId = $('bulk-stage').value;
+  const s = findStage(stageId);
+  if(!s){ toast('阶段不存在', 'err'); return; }
+  const parsed = parseBulkText($('bulk-text').value);
+  if(!parsed.matches.length){
+    $('bulk-preview').innerHTML = '<div class="store-errs">没有解析出任何对局。格式示例：<code>双败胜者组第1轮 DRE 3:1 DGE</code></div>';
+    bulkState.parsed = parsed; bulkState.rows = null;
+    return;
+  }
+  const idx = clubLookupIndex();
+  const tour = getTournament(currentTournamentId) || {};
+  const eventIds = new Set(tour.teamIds || []);
+  const stageIds = new Set();
+  (s.matches || []).forEach(m => { if(m.teamAId) stageIds.add(m.teamAId); if(m.teamBId) stageIds.add(m.teamBId); });
+  let ambiguous = 0;
+  const rows = parsed.matches.map(p => {
+    const aList = idx.get(p.a.toLowerCase()), bList = idx.get(p.b.toLowerCase());
+    const a = pickBulkClub(aList, stageIds, eventIds);
+    const b = pickBulkClub(bList, stageIds, eventIds);
+    if((aList && aList.length > 1) || (bList && bList.length > 1)) ambiguous++;
+    return Object.assign({}, p, {
+      aId: a && a.id, bId: b && b.id,
+      aName: a ? a.name : p.a, bName: b ? b.name : p.b,
+      target: null, state: ''
+    });
+  });
+  rows.forEach(r => {
+    r.target = findBulkTarget(s, r);
+    if(!r.aId || !r.bId) r.state = '队伍不存在';
+    else if(r.target && r.target.scoreA !== '' && r.target.scoreB !== '') r.state = '已有比分';
+    else if(r.target) r.state = '填入空位';
+    else r.state = $('bulk-add').checked ? '新增对局' : '无对应对局';
+  });
+  bulkState = { stageId: stageId, parsed: parsed, rows: rows };
+
+  const noTarget = rows.filter(r => !r.target).length;
+  let html = '<div class="bulk-summary">共 <b>' + rows.length + '</b> 场 · ' +
+    rows.filter(r => r.state === '填入空位').length + ' 场填入空位 · ' +
+    rows.filter(r => r.state === '新增对局').length + ' 场新增 · ' +
+    rows.filter(r => r.state === '已有比分').length + ' 场已有比分 · ' +
+    rows.filter(r => r.state === '队伍不存在').length + ' 场队伍不存在' +
+    (ambiguous ? ' · <span class="warn-text">' + ambiguous + ' 场有同简称队伍，已按本阶段/本赛事优先匹配</span>' : '') + '</div>';
+  if(noTarget && !$('bulk-add').checked){
+    html += '<div class="bulk-hint">有 ' + noTarget + ' 场暂时没有匹配到空位：如果按轮次顺序录入，上一轮胜者会在写入时自动推进，系统会再次匹配；' +
+      '如果这阶段本来就还没对阵，可先点阶段上的「生成对阵」，或勾选「允许新增对局」。</div>';
+  }
+  html += '<div class="table-wrap" style="max-height:320px;overflow:auto"><table class="plain"><thead><tr>' +
+    '<th>轮次</th><th>队伍A</th><th>比分</th><th>队伍B</th><th>处理</th></tr></thead><tbody>';
+  rows.forEach(r => {
+    const bad = r.state === '队伍不存在';
+    html += '<tr' + (bad ? ' class="bulk-bad"' : '') + '>' +
+      '<td class="nowrap">' + esc(r.round) + '</td>' +
+      '<td>' + esc(r.aName || r.a) + '</td>' +
+      '<td class="nowrap"><b>' + esc(r.scoreA === '' ? '—' : r.scoreA) + ' : ' + esc(r.scoreB === '' ? '—' : r.scoreB) + '</b></td>' +
+      '<td>' + esc(r.bName || r.b) + '</td>' +
+      '<td class="nowrap">' + esc(r.state) + '</td></tr>';
+  });
+  html += '</tbody></table></div>';
+  if(parsed.errors.length){
+    html += '<div class="store-errs" style="margin-top:8px">' + parsed.errors.map(e => esc(e)).join('<br>') + '</div>';
+  }
+  $('bulk-preview').innerHTML = html;
+  $('bulk-status').textContent = '';
+}
+
+async function bulkImport(){
+  if(!bulkState.rows || !bulkState.rows.length){ toast('请先点「解析预览」', 'err'); return; }
+  const s = findStage(bulkState.stageId);
+  if(!s){ toast('阶段不存在', 'err'); return; }
+  const opts = {
+    create: $('bulk-create').checked,
+    add: $('bulk-add').checked,
+    overwrite: $('bulk-overwrite').checked
+  };
+  let unknown = [];
+  bulkState.rows.forEach(r => { if(!r.aId) unknown.push(r.a); if(!r.bId) unknown.push(r.b); });
+  unknown = uniq(unknown);
+  if(unknown.length && !opts.create){
+    toast('有 ' + unknown.length + ' 支队伍不存在：' + unknown.slice(0, 6).join('、') + '（可勾选自动创建）', 'err');
+    return;
+  }
+  if(unknown.length && opts.create){
+    unknown.forEach(name => {
+      state.clubs.push({
+        id: uid('c'), createdAt: Date.now(), name: name, shortName: name,
+        category: 'external', seat: null, region: null, color: '#8899aa',
+        note: '批量录入自动创建', relatedIds: []
+      });
+    });
+    const idx = clubLookupIndex();
+    const stageIds = new Set();
+    (s.matches || []).forEach(m => { if(m.teamAId) stageIds.add(m.teamAId); if(m.teamBId) stageIds.add(m.teamBId); });
+    const eventIds = new Set((getTournament(currentTournamentId) || {}).teamIds || []);
+    bulkState.rows.forEach(r => {
+      if(!r.aId){ const c = pickBulkClub(idx.get(r.a.toLowerCase()), stageIds, eventIds); r.aId = c && c.id; }
+      if(!r.bId){ const c = pickBulkClub(idx.get(r.b.toLowerCase()), stageIds, eventIds); r.bId = c && c.id; }
+    });
+  }
+  let filled = 0, added = 0, skipped = 0;
+  bulkState.rows.forEach(r => {
+    if(!r.aId || !r.bId){ skipped++; return; }
+    // 重新按当前状态找目标：上一行填完比分后，胜者可能已经推进到下一轮
+    let m = findBulkTarget(s, r);
+    if(m && !opts.overwrite && m.scoreA !== '' && m.scoreB !== ''){ skipped++; return; }
+    if(!m){
+      if(!opts.add){ skipped++; return; }
+      m = {
+        id: uid('m'), round: r.round, groupId: null, bracket: guessBracket(r.round),
+        teamAId: r.aId, teamBId: r.bId, scoreA: '', scoreB: '', winnerId: '', note: ''
+      };
+      if(s.format === 'group' && s.config && s.config.groups && s.config.groups[0]) m.groupId = s.config.groups[0].id;
+      s.matches.push(m);
+      added++;
+    }
+    const swap = (m.teamAId === r.bId && m.teamBId === r.aId);
+    if(!m.teamAId) m.teamAId = r.aId;
+    if(!m.teamBId) m.teamBId = r.bId;
+    m.scoreA = swap ? r.scoreB : r.scoreA;
+    m.scoreB = swap ? r.scoreA : r.scoreB;
+    m.winnerId = '';
+    filled++;
+    if(isBracketFormat(s.format)) advanceFromMatch(s, m);
+  });
+  saveState();
+  refreshStage(s.id);
+  closeModal('modal-bulk');
+  if(!filled){
+    toast('没有写入任何对局：' + skipped + ' 场被跳过' + (opts.add ? '' : '（可勾选「允许新增对局」）'), 'err');
+    return;
+  }
+  toast('已写入 ' + filled + ' 场（新增 ' + added + '，跳过 ' + skipped + '）' +
+    (unknown.length ? '，新建队伍 ' + unknown.length + ' 支' : ''), 'ok');
+}
+
+/* ---------- 截图识别（可选，调用用户自己的 OpenAI 兼容接口） ---------- */
+function readAiConfig(){
+  try{ return JSON.parse(localStorage.getItem(THEGAME_AI_KEY) || '{}') || {}; }catch(e){ return {}; }
+}
+function writeAiConfig(cfg){
+  try{ localStorage.setItem(THEGAME_AI_KEY, JSON.stringify(cfg)); }catch(e){ /* 忽略 */ }
+}
+function fileToDataUrl(file){
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(fr.error || new Error('读取图片失败'));
+    fr.readAsDataURL(file);
+  });
+}
+function extractJson(text){
+  let s = String(text || '').trim();
+  s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+  const start = s.indexOf('{'), end = s.lastIndexOf('}');
+  if(start < 0 || end <= start) throw new Error('返回内容不是 JSON');
+  return JSON.parse(s.slice(start, end + 1));
+}
+function ocrJsonToText(obj){
+  const lines = [];
+  (obj.rounds || []).forEach(r => {
+    lines.push(r.name || '第1轮');
+    (r.matches || []).forEach(m => {
+      const a = m.a || m.teamA || m.winner || '';
+      const b = m.b || m.teamB || m.loser || '';
+      if(!a || !b) return;
+      const sa = m.scoreA == null ? '' : String(m.scoreA);
+      const sb = m.scoreB == null ? '' : String(m.scoreB);
+      lines.push(sa === '' || sb === '' ? a + ' vs ' + b : a + ' ' + sa + ':' + sb + ' ' + b);
+    });
+  });
+  return lines.join('\n');
+}
+async function bulkOcrRecognize(){
+  const status = $('bulk-ocr-status');
+  const file = ($('bulk-image').files || [])[0];
+  if(!file){ status.textContent = '请先选择一张赛制框图/对阵表截图'; return; }
+  const cfg = {
+    base: $('bulk-api-base').value.trim(),
+    model: $('bulk-api-model').value.trim(),
+    key: $('bulk-api-key').value.trim()
+  };
+  if(!cfg.base || !cfg.model || !cfg.key){ status.textContent = '请填写接口地址、模型名和 API Key'; return; }
+  writeAiConfig(cfg);
+  status.textContent = '正在识别…';
+  try{
+    const dataUrl = await fileToDataUrl(file);
+    const prompt = '你是电竞赛事数据录入助手。图片是赛制框图或对阵表。' +
+      '请只输出 JSON，不要任何解释，格式为：' +
+      '{"rounds":[{"name":"胜者组第1轮","matches":[{"a":"DRE","scoreA":3,"b":"DGE","scoreB":1}]}]}。' +
+      '轮次名用图中的分区名（如 胜者组第1轮、败者组第2轮、总决赛）；队伍用图中的简称；' +
+      '比分未知或没填写时 scoreA/scoreB 用空字符串。不要编造队伍或比分。';
+    const res = await fetch(cfg.base.replace(/\/+$/, '') + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + cfg.key },
+      body: JSON.stringify({
+        model: cfg.model,
+        temperature: 0,
+        messages: [
+          { role: 'system', content: prompt },
+          { role: 'user', content: [
+            { type: 'text', text: '请识别这张框图里的所有对局。' },
+            { type: 'image_url', image_url: { url: dataUrl } }
+          ] }
+        ]
+      })
+    });
+    if(!res.ok){
+      const body = await res.text();
+      throw new Error('接口返回 ' + res.status + '：' + body.slice(0, 200));
+    }
+    const data = await res.json();
+    const content = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    const text = ocrJsonToText(extractJson(content));
+    if(!text.trim()) throw new Error('没有识别出对局');
+    $('bulk-text').value = text;
+    bulkPreview();
+    status.textContent = '识别完成，已填入上方文本框，请核对后点「写入」。';
+  }catch(e){
+    status.textContent = '识别失败：' + ((e && e.message) || e);
+  }
+}
+
+/* ============================================================
    初始化
    ============================================================ */
-function init(){
-  state = loadState();
+async function init(){
+  // 先兜底一个空状态，保证任何情况下页面都能渲染出来
+  state = defaultState();
   // 导航
   document.querySelectorAll('.nav-link').forEach(a => {
     a.addEventListener('click', () => go(a.dataset.view));
@@ -2507,6 +3965,21 @@ function init(){
   document.addEventListener('keydown', (e) => {
     if(e.key === 'Escape') document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open'));
   });
+
+  // 读取数据：localStorage 先上屏，IndexedDB 在后台补齐（不阻塞渲染）
+  try{
+    storageInit();
+  }catch(e){
+    state = defaultState();
+    storage.lsOk = false;
+    storage.notice = { type: 'err', html: '读取本地数据失败：' + esc((e && e.message) || e) + '。页面已按空数据打开，请先导出/导入备份。' };
+  }
+
+  // 内置静态数据集：本地缺什么就补什么（本地有改动的地方不会被覆盖）
+  try{ applySeedOnBoot(); }catch(e){ console.warn('内置数据补齐失败', e); }
+
   go('dashboard');
+  showStorageNotice();
+  initMultiTabGuard();
 }
 document.addEventListener('DOMContentLoaded', init);

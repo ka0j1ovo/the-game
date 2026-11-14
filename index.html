@@ -25,6 +25,9 @@
   </nav>
 
   <div class="topbar-right">
+    <button class="storage-pill ok" id="storage-pill" onclick="openStoragePanel()" title="存储与备份">
+      <span class="sp-dot"></span><span id="storage-pill-text">存储就绪</span>
+    </button>
     <div class="searchbox">
       <input id="search-input" type="text" placeholder="搜索比赛 / 队伍…" autocomplete="off">
     </div>
@@ -35,6 +38,8 @@
     </div>
   </div>
 </header>
+
+<div id="storage-alert" class="storage-alert" style="display:none"></div>
 
 <div id="breadcrumb" class="breadcrumb"></div>
 
@@ -99,6 +104,7 @@
     <div class="view-head">
       <h1 id="tournament-title">赛事</h1>
       <div class="head-actions">
+        <button class="btn btn-primary" onclick="openBulkEntry()" title="粘贴文本批量录入比赛结果">批量录入</button>
         <button class="btn" onclick="openTeamPicker('tournament')">+ 添加参赛队伍</button>
         <button class="btn" onclick="addStage()">+ 添加赛制阶段</button>
         <button class="btn btn-danger" onclick="deleteCurrentTournament()">删除赛事</button>
@@ -153,7 +159,7 @@
 
 <footer class="footer">
   <span>The Game · 黄狗国赛事数据中心</span>
-  <span>数据仅保存在本浏览器 localStorage 中 · 请定期导出备份 · <a class="clickable" onclick="loadSample()">载入示例数据</a></span>
+  <span>数据自动保存在本浏览器（IndexedDB 主存 + localStorage 镜像，每 5 分钟自动快照）· <a class="clickable" onclick="openStoragePanel()">存储与备份</a> · <a class="clickable" onclick="loadSample()">载入示例数据</a></span>
 </footer>
 
 <div id="toast" class="toast"></div>
@@ -314,6 +320,77 @@
   </div>
 </div>
 
+<!-- ============ 存储与备份 ============ -->
+<div class="modal-overlay" id="modal-storage">
+  <div class="modal modal-wide">
+    <h3>存储与备份</h3>
+    <div id="storage-panel-body"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-storage')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 批量录入 ============ -->
+<div class="modal-overlay" id="modal-bulk">
+  <div class="modal modal-wide">
+    <h3>批量录入</h3>
+    <div class="form-grid">
+      <label class="full">目标阶段
+        <select id="bulk-stage" onchange="bulkStageChanged()"></select>
+      </label>
+      <label class="full">比赛文本
+        <textarea id="bulk-text" class="bulk-text" rows="8" spellcheck="false"
+          placeholder="每行一场，也可以一行多场（空格 / 分号分隔），轮次可单独一行或用【】标注：&#10;双败胜者组第一轮 DRE 3:1 DGE  RBG 3:0 BOTV&#10;败者组第一轮 FLC 2:0 FOR&#10;【总决赛】DRE 3:2 RBG"></textarea>
+        <span class="muted plain-hint">支持 <code>3:1</code> <code>3-1</code> <code>3比1</code>，也支持没有比分的 <code>DRE vs DGE</code>；队伍按简称或全称匹配。</span>
+      </label>
+      <label class="full bulk-opts">
+        <span><input type="checkbox" id="bulk-create"> 自动创建未知队伍</span>
+        <span><input type="checkbox" id="bulk-add"> 允许新增对局</span>
+        <span><input type="checkbox" id="bulk-overwrite"> 覆盖已有比分</span>
+      </label>
+    </div>
+    <div class="store-actions" style="margin-bottom:10px">
+      <button class="btn btn-sm btn-primary" onclick="bulkPreview()">解析预览</button>
+      <button class="btn btn-sm" onclick="bulkImport()">写入</button>
+      <button class="btn btn-sm" onclick="bulkClear()">清空</button>
+      <span id="bulk-status" class="muted"></span>
+    </div>
+    <div id="bulk-preview" class="bulk-preview"><div class="muted">粘贴文本后点「解析预览」。</div></div>
+
+    <details class="bulk-ocr">
+      <summary>从截图识别（可选，需要你自己的 AI 接口 Key）</summary>
+      <div class="bulk-ocr-body">
+        <div class="form-grid">
+          <label class="full">赛制框图截图
+            <input type="file" id="bulk-image" accept="image/*">
+          </label>
+          <label>接口地址
+            <input type="text" id="bulk-api-base" placeholder="https://api.openai.com/v1">
+          </label>
+          <label>模型
+            <input type="text" id="bulk-api-model" placeholder="gpt-4o-mini">
+          </label>
+          <label class="full">API Key
+            <input type="password" id="bulk-api-key" placeholder="sk-…">
+          </label>
+        </div>
+        <div class="store-actions">
+          <button class="btn btn-sm" onclick="bulkOcrRecognize()">识别并填入文本</button>
+          <span id="bulk-ocr-status" class="muted"></span>
+        </div>
+        <p class="muted plain-hint">图片会发送到你填写的接口；Key 只保存在本浏览器（localStorage，不随导出数据带走）。识别结果会先变成文本让你核对，不会直接写入。</p>
+      </div>
+    </details>
+
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-bulk')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 内置静态数据集：由 tools/build-seed.mjs 从 data/esports-data.json 生成，随网站发布 -->
+<script src="data/seed-data.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

@@ -81,6 +81,70 @@ body{
 .btn-ghost:hover{background:rgba(255,255,255,.15);border-color:#fff}
 .btn-sm{padding:3px 9px;font-size:12px;border-radius:4px}
 
+/* ---------- 存储状态 ---------- */
+.storage-pill{
+  display:inline-flex;align-items:center;gap:7px;
+  padding:6px 11px;border-radius:16px;border:1px solid rgba(255,255,255,.35);
+  background:rgba(255,255,255,.12);color:#eaf1f8;font-size:12px;font-weight:600;
+  cursor:pointer;white-space:nowrap;
+}
+.storage-pill:hover{background:rgba(255,255,255,.22)}
+.storage-pill .sp-dot{width:8px;height:8px;border-radius:50%;background:#5dd39e;flex-shrink:0}
+.storage-pill.warn{border-color:#e0b25a;color:#ffe6b8}
+.storage-pill.warn .sp-dot{background:#e0b25a}
+.storage-pill.err{border-color:#ff9b90;background:rgba(179,56,44,.55);color:#ffe0dc}
+.storage-pill.err .sp-dot{background:#ff6b5e}
+.storage-alert{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:10px 20px;font-size:13px;
+  border-bottom:1px solid var(--border);
+  background:#fff8e6;color:#6b4f1d;
+}
+.storage-alert.err{background:#fdecea;color:#8c2a20;border-bottom-color:#f0c4bf}
+.storage-alert.warn{background:#fff8e6;color:#6b4f1d}
+.storage-alert.info{background:var(--blue-bg);color:var(--navy)}
+.storage-alert .sa-icon{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:20px;height:20px;border-radius:50%;background:currentColor;color:#fff;
+  font-size:12px;font-weight:800;flex-shrink:0;
+}
+.storage-alert .sa-text{flex:1;min-width:200px}
+.storage-alert .sa-close{cursor:pointer;font-size:18px;line-height:1;opacity:.6;padding:0 4px}
+.storage-alert .sa-close:hover{opacity:1}
+.store-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 18px;margin-bottom:12px}
+.store-grid .kv{display:flex;gap:10px;font-size:13px;padding:3px 0;border-bottom:1px dashed #e2e8f0}
+.store-grid .kv-k{color:var(--muted);flex:0 0 96px}
+.store-grid .kv-v{flex:1;min-width:0;color:var(--text);word-break:break-all}
+.ok-text{color:var(--ok);font-weight:700}
+.warn-text{color:var(--warn);font-weight:700}
+.store-errs{background:#fdecea;border:1px solid #f0c4bf;border-radius:6px;padding:8px 10px;color:#8c2a20;font-size:12.5px;margin-bottom:10px}
+.store-tip{font-size:12.5px;line-height:1.6;margin:8px 0 12px}
+.store-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.snap-title{font-size:14px;color:var(--navy);margin:0 0 8px}
+
+/* ---------- 批量录入 ---------- */
+.bulk-text{
+  width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:6px;
+  font:13px/1.6 Consolas,"Cascadia Mono","Microsoft YaHei",monospace;
+  color:var(--text);resize:vertical;min-height:120px;
+}
+.bulk-text:focus{outline:none;border-color:var(--navy-light)}
+.bulk-opts{flex-direction:row !important;gap:18px !important;flex-wrap:wrap;color:var(--text);font-weight:500}
+.bulk-opts span{display:inline-flex;align-items:center;gap:6px;font-size:13px}
+.bulk-opts input[type=checkbox]{width:auto}
+.plain-hint{font-weight:400;font-size:12px;line-height:1.6;margin-top:4px;display:block}
+.plain-hint code{background:#eef3f9;border:1px solid #d4dee9;border-radius:3px;padding:0 4px;font-size:11.5px}
+.bulk-preview{max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;background:#fbfcfe}
+.bulk-preview .bulk-summary{font-size:12.5px;color:var(--muted);margin-bottom:8px}
+.bulk-preview .bulk-summary b{color:var(--navy);font-size:14px}
+.bulk-preview table{font-size:12.5px}
+.bulk-preview tr.bulk-bad td{background:#fdecea;color:#8c2a20}
+.bulk-hint{background:#fff8e6;border:1px solid #ead6a5;color:#6b4f1d;border-radius:6px;padding:7px 10px;font-size:12.5px;line-height:1.6;margin-bottom:8px}
+.bulk-ocr{margin-top:14px;border-top:1px dashed var(--border);padding-top:10px}
+.bulk-ocr summary{cursor:pointer;color:var(--navy);font-weight:700;font-size:13.5px}
+.bulk-ocr-body{margin-top:10px}
+@media (max-width: 900px){ .store-grid{grid-template-columns:1fr} }
+
 /* ---------- 布局 ---------- */
 .container{max-width:1240px;margin:0 auto;padding:20px;min-height:calc(100vh - 120px)}
 .view-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap}

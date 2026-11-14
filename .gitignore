@@ -1,0 +1,6 @@
+# 导出源文件（临时/原始导出），规范化后的数据在 data/esports-data.json
+/esports-data*.json
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
