@@ -1041,6 +1041,7 @@ async function renderStoragePanel(){
     '<button class="btn btn-sm" onclick="exportData()">导出 JSON</button>' +
     '<button class="btn btn-sm" onclick="triggerImport()">导入 JSON</button>' +
     '<button class="btn btn-sm" onclick="renderStoragePanel()">刷新</button>' +
+    '<button class="btn btn-sm btn-danger-text" onclick="confirmClear()">清空全部数据</button>' +
     '</div>';
 
   // 内置静态数据集（写死在 data/seed-data.js 里，清缓存/换架构都不影响）
@@ -3702,9 +3703,9 @@ function renderTeamH2h(c){
 }
 
 /* ============================================================
-   队伍对比
+   队伍对比（2–3 支）
    ============================================================ */
-let compareState = { a: null, b: null };
+let compareState = { ids: [] };
 
 function compareGroupOf(id){
   const c = getClub(id);
@@ -3720,7 +3721,7 @@ function teamCompareSummary(clubId){
   (state.tournaments || []).forEach(t => {
     (t.stages || []).forEach(s => (s.matches || []).forEach(m => {
       const aIn = group.has(m.teamAId), bIn = group.has(m.teamBId);
-      if(aIn === bIn) return;                       // 两边都在组内 = 关联队伍内部对局
+      if(aIn === bIn) return;
       if(m.scoreA === '' || m.scoreA == null || m.scoreB === '' || m.scoreB == null) return;
       const meInA = aIn;
       const opp = meInA ? m.teamBId : m.teamAId;
@@ -3764,47 +3765,95 @@ function compareHeadToHead(sa, sb){
   list.forEach(x => { if(x.win === true) aw++; else if(x.win === false) bw++; else dr++; });
   return { list: list, aw: aw, bw: bw, dr: dr };
 }
-function compareCommonOpponents(sa, sb){
+function comparePairs(sums){
+  const out = [];
+  for(let i = 0; i < sums.length; i++){
+    for(let j = i + 1; j < sums.length; j++){
+      out.push(Object.assign({ i: i, j: j }, compareHeadToHead(sums[i], sums[j])));
+    }
+  }
+  return out;
+}
+function compareCommonOpponents(sums){
   const map = new Map();
-  const feed = (log, side) => log.forEach(x => {
-    if(sa.group.has(x.opp) || sb.group.has(x.opp)) return;
+  sums.forEach((sum, idx) => sum.log.forEach(x => {
+    if(sums.some(s => s.group.has(x.opp))) return;
     if(!getClub(x.opp)) return;
     let rec = map.get(x.opp);
-    if(!rec){ rec = { id: x.opp, a: { w: 0, l: 0, d: 0 }, b: { w: 0, l: 0, d: 0 } }; map.set(x.opp, rec); }
-    const r = rec[side];
+    if(!rec){ rec = { id: x.opp, recs: sums.map(() => ({ w: 0, l: 0, d: 0 })) }; map.set(x.opp, rec); }
+    const r = rec.recs[idx];
     if(x.win === true) r.w++; else if(x.win === false) r.l++; else r.d++;
-  });
-  feed(sa.log, 'a');
-  feed(sb.log, 'b');
+  }));
   const total = r => r.w + r.l + r.d;
   return Array.from(map.values())
-    .filter(r => total(r.a) > 0 && total(r.b) > 0)
-    .sort((x, y) => total(y.a) + total(y.b) - total(x.a) - total(x.b));
+    .filter(r => r.recs.every(x => total(x) > 0))
+    .sort((a, b) => {
+      const ta = a.recs.reduce((n, r) => n + total(r), 0);
+      const tb = b.recs.reduce((n, r) => n + total(r), 0);
+      return tb - ta;
+    });
 }
-function compareSharedTournaments(sa, sb){
+function compareSharedTournaments(sums){
   return (state.tournaments || [])
-    .filter(t => (t.teamIds || []).some(id => sa.group.has(id)) && (t.teamIds || []).some(id => sb.group.has(id)))
-    .map(t => ({ t: t, ra: compareRankOf(t, sa.group), rb: compareRankOf(t, sb.group) }))
+    .filter(t => sums.every(s => (t.teamIds || []).some(id => s.group.has(id))))
+    .map(t => ({ t: t, ranks: sums.map(s => compareRankOf(t, s.group)) }))
     .sort((x, y) => String(y.t.date || '').localeCompare(String(x.t.date || '')) || ((y.t.createdAt || 0) - (x.t.createdAt || 0)));
 }
 function startCompare(a, b){
-  compareState.a = a || null;
-  compareState.b = b || null;
+  compareState = { ids: [a, b].filter(Boolean) };
   go('compare');
 }
-function comparePick(side, id){
-  if(side === 'a') compareState.a = id || null;
-  else compareState.b = id || null;
-  if(compareState.a && compareState.b && compareState.a === compareState.b){
-    toast('两边选了同一支队伍', 'err');
+function compareGroupOverlap(ids){
+  for(let i = 0; i < ids.length; i++){
+    const gi = compareGroupOf(ids[i]);
+    for(let j = i + 1; j < ids.length; j++){
+      const gj = compareGroupOf(ids[j]);
+      if(Array.from(gi).some(id => gj.has(id))) return true;
+    }
+  }
+  return false;
+}
+function comparePick(slot, id){
+  if(!id) return;
+  if(!getClub(id)) return;
+  if(compareState.ids.some((x, i) => i !== slot && x === id)){
+    toast('这个队伍已经在对比里了', 'err');
     return;
   }
+  const next = compareState.ids.slice();
+  next[slot] = id;
+  if(compareGroupOverlap(next.filter(Boolean))){
+    toast('这两支是关联队伍（算同一支），不能同时对比', 'err');
+    return;
+  }
+  compareState.ids[slot] = id;
+  closeCompareDrops();
+  renderCompare();
+}
+function addCompareTeam(){
+  if(compareState.ids.length >= 3){ toast('最多同时对比 3 支队伍', 'err'); return; }
+  const used = new Set(compareState.ids);
+  const sums = compareState.ids.map(id => teamCompareSummary(id));
+  const count = {};
+  sums.forEach(s => s.log.forEach(x => { if(!used.has(x.opp)) count[x.opp] = (count[x.opp] || 0) + 1; }));
+  let pick = Object.keys(count).sort((a, b) => count[b] - count[a]).find(id => getClub(id));
+  if(!pick){
+    const other = state.clubs.find(c => !used.has(c.id) && !sums.some(s => s.group.has(c.id)));
+    pick = other ? other.id : null;
+  }
+  if(!pick){ toast('没有更多队伍可加了', 'err'); return; }
+  compareState.ids.push(pick);
+  renderCompare();
+}
+function removeCompareTeam(slot){
+  if(compareState.ids.length <= 2){ toast('至少保留两支队伍', 'err'); return; }
+  compareState.ids.splice(slot, 1);
   renderCompare();
 }
 function swapCompare(){
-  const a = compareState.a;
-  compareState.a = compareState.b;
-  compareState.b = a;
+  const a = compareState.ids[0];
+  compareState.ids[0] = compareState.ids[1];
+  compareState.ids[1] = a;
   renderCompare();
 }
 function suggestOpponent(id, summary){
@@ -3823,41 +3872,85 @@ function suggestOpponent(id, summary){
 function ensureCompareSelection(){
   const valid = id => !!(id && getClub(id));
   const last = state.meta && state.meta.lastCompare;
-  if(!valid(compareState.a)){
-    compareState.a = (last && valid(last.a)) ? last.a : (valid(currentClubId) ? currentClubId : ((state.clubs[0] || {}).id || null));
+  let ids = (compareState.ids || []).filter(valid).slice(0, 3);
+  if(!ids.length && last){
+    if(Array.isArray(last.ids)) ids = last.ids.filter(valid);
+    else if(last.a || last.b) ids = [last.a, last.b].filter(valid);
   }
-  if(!valid(compareState.b) || compareState.b === compareState.a){
-    compareState.b = (last && valid(last.b) && last.b !== compareState.a) ? last.b : suggestOpponent(compareState.a);
+  ids = ids.slice(0, 3);
+  if(!ids.length) ids = [valid(currentClubId) ? currentClubId : ((state.clubs[0] || {}).id || null)];
+  ids = ids.filter(Boolean);
+  while(ids.length < 2){
+    const next = suggestOpponent(ids[0]);
+    if(!next || ids.indexOf(next) >= 0) break;
+    ids.push(next);
   }
+  compareState.ids = ids;
 }
 function rememberCompare(){
   if(!state.meta || typeof state.meta !== 'object') state.meta = {};
   const cur = state.meta.lastCompare || {};
-  if(cur.a !== compareState.a || cur.b !== compareState.b){
-    state.meta.lastCompare = { a: compareState.a, b: compareState.b };
+  const same = Array.isArray(cur.ids) && cur.ids.length === compareState.ids.length &&
+    cur.ids.every((id, i) => id === compareState.ids[i]);
+  if(!same){
+    state.meta.lastCompare = { ids: compareState.ids.slice() };
     saveState();
   }
 }
-function compareSelectHtml(side, selected){
-  const cats = [['hupl', 'HUPL 席位'], ['secondary', '次级'], ['external', '外赛区']];
-  let html = '<select class="compare-select" onchange="comparePick(\'' + side + '\',this.value)">' +
-    '<option value="">— 选择队伍 —</option>';
-  cats.forEach(([cat, label]) => {
-    const list = state.clubs.filter(c => c.category === cat).slice()
-      .sort((x, y) => (x.name || '').localeCompare(y.name || '', 'zh'));
-    if(!list.length) return;
-    html += '<optgroup label="' + label + '">' + list.map(c =>
-      '<option value="' + c.id + '"' + (c.id === selected ? ' selected' : '') + '>' +
-      esc(c.name) + (c.shortName ? '（' + esc(c.shortName) + '）' : '') + '</option>').join('') + '</optgroup>';
-  });
-  html += '</select>';
-  return html;
+
+/* ---------- 可搜索的队伍选择器 ---------- */
+function compareSearch(slot, q){
+  const box = $('cmp-drop-' + slot);
+  if(!box) return;
+  const query = String(q || '').trim().toLowerCase();
+  let list = state.clubs.filter(c => !query || clubMatchesQuery(c, query));
+  if(!list.length && query){
+    const fuzzy = fuzzyMatchClub(query, state.clubs);
+    if(fuzzy) list = [fuzzy];
+  }
+  list = list.slice(0, 8);
+  if(!list.length){
+    box.innerHTML = '<div class="cmp-drop-empty">没有匹配的队伍（可以试试简称）</div>';
+    box.classList.add('open');
+    return;
+  }
+  box.innerHTML = list.map(c =>
+    '<div class="cmp-drop-item" onmousedown="event.preventDefault();comparePick(' + slot + ',\'' + c.id + '\')">' +
+    '<span class="dot" style="background:' + clubColor(c.id) + '"></span>' +
+    '<span class="cmp-drop-name">' + esc(c.name) + '</span>' +
+    (c.shortName && c.shortName !== c.name ? '<span class="muted">' + esc(c.shortName) + '</span>' : '') +
+    '<span class="muted cmp-drop-cat">' + esc(CATEGORY_LABELS[c.category] || '') + '</span>' +
+    '</div>').join('');
+  box.classList.add('open');
+}
+function closeCompareDrops(){
+  document.querySelectorAll('.cmp-drop.open').forEach(el => el.classList.remove('open'));
+}
+function compareKey(e, slot){
+  if(e.key === 'Escape'){ closeCompareDrops(); return; }
+  if(e.key === 'Enter'){
+    const first = document.querySelector('#cmp-drop-' + slot + ' .cmp-drop-item');
+    if(first){ e.preventDefault(); first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); }
+  }
+}
+function compareInputValue(c){
+  if(!c) return '';
+  const short = c.shortName && c.shortName !== c.name ? '（' + c.shortName + '）' : '';
+  return c.name + short;
 }
 function cmpBetter(a, b){
   if(a == null || b == null) return null;
   if(a > b) return 'a';
   if(b > a) return 'b';
   return null;
+}
+function cmpBestIndex(values, mode){
+  const valid = [];
+  values.forEach((v, i) => { if(v != null && !isNaN(v)) valid.push({ v: v, i: i }); });
+  if(!valid.length) return -1;
+  const target = mode === 'min' ? Math.min.apply(null, valid.map(x => x.v)) : Math.max.apply(null, valid.map(x => x.v));
+  const hits = valid.filter(x => x.v === target);
+  return hits.length === 1 ? hits[0].i : -1;
 }
 function cmpDiffText(n){ return (n > 0 ? '+' : '') + n; }
 function cmpFormHtml(log){
@@ -3867,10 +3960,10 @@ function cmpFormHtml(log){
     '<span class="' + (x.win === true ? 'w' : x.win === false ? 'l' : 'd') + '">' +
     (x.win === true ? 'W' : x.win === false ? 'L' : 'D') + '</span>').join('') + '</span>';
 }
-function compareMetricRow(label, aHtml, bHtml, better){
+function cmpMetricRow(label, cells, betterIdx){
   return '<tr><th>' + label + '</th>' +
-    '<td class="' + (better === 'a' ? 'cmp-better' : '') + '">' + aHtml + '</td>' +
-    '<td class="' + (better === 'b' ? 'cmp-better' : '') + '">' + bHtml + '</td></tr>';
+    cells.map((c, i) => '<td class="' + (i === betterIdx ? 'cmp-better' : '') + '">' + c + '</td>').join('') +
+    '</tr>';
 }
 function compareTeamCard(c, sum){
   const extra = c.category === 'hupl'
@@ -3884,87 +3977,123 @@ function compareTeamCard(c, sum){
 }
 function renderCompare(){
   ensureCompareSelection();
-  const a = getClub(compareState.a), b = getClub(compareState.b);
-  $('compare-pickers').innerHTML =
-    '<div class="cmp-pick"><span class="muted">队伍 A</span>' + compareSelectHtml('a', compareState.a) + '</div>' +
-    '<div class="cmp-pick"><span class="muted">队伍 B</span>' + compareSelectHtml('b', compareState.b) + '</div>';
+  const ids = compareState.ids.filter(id => getClub(id));
+  if(ids.length !== compareState.ids.length) compareState.ids = ids;
+  // 选择器
+  let pickHtml = '';
+  ids.forEach((id, i) => {
+    const c = getClub(id);
+    pickHtml += '<div class="cmp-pick">' +
+      '<span class="cmp-slot">' + String.fromCharCode(65 + i) + '</span>' +
+      '<div class="cmp-search">' +
+      '<input class="cmp-input" id="cmp-input-' + i + '" value="' + esc(compareInputValue(c)) + '" placeholder="搜索队伍名 / 简称…" autocomplete="off" ' +
+      'oninput="compareSearch(' + i + ',this.value)" onfocus="this.select();compareSearch(' + i + ',\'\')" ' +
+      'onblur="setTimeout(closeCompareDrops,150)" onkeydown="compareKey(event,' + i + ')">' +
+      '<div class="cmp-drop" id="cmp-drop-' + i + '"></div>' +
+      '</div>' +
+      (ids.length > 2 ? '<button class="cmp-remove" onclick="removeCompareTeam(' + i + ')" title="移除">×</button>' : '') +
+      '</div>';
+  });
+  if(ids.length < 3) pickHtml += '<button class="btn btn-sm cmp-add" onclick="addCompareTeam()">+ 添加第三支</button>';
+  $('compare-pickers').innerHTML = pickHtml;
+
   const body = $('compare-body');
-  if(!a || !b){
+  if(ids.length < 2){
     body.innerHTML = '<div class="empty">至少需要两支队伍才能对比。</div>';
     return;
   }
-  const sa = teamCompareSummary(a.id), sb = teamCompareSummary(b.id);
-  if(Array.from(sa.group).some(id => sb.group.has(id))){
-    body.innerHTML = '<div class="empty">这两支是关联队伍（按同一支计算），换一支再比。</div>';
+  if(compareGroupOverlap(ids)){
+    body.innerHTML = '<div class="empty">选中的队伍里有互相关联的队伍（按同一支计算），换一支再比。</div>';
     return;
   }
-  const h2h = compareHeadToHead(sa, sb);
-  const common = compareCommonOpponents(sa, sb);
-  const shared = compareSharedTournaments(sa, sb);
-  let aRankWin = 0, bRankWin = 0;
+  const sums = ids.map(id => teamCompareSummary(id));
+  const pairs = comparePairs(sums);
+  const common = compareCommonOpponents(sums);
+  const shared = compareSharedTournaments(sums);
+  const rankBest = sums.map(() => 0);
   shared.forEach(x => {
-    if(x.ra && x.rb){ if(x.ra < x.rb) aRankWin++; else if(x.rb < x.ra) bRankWin++; }
+    const ranks = x.ranks;
+    if(ranks.some(r => r == null)) return;
+    const best = Math.min.apply(null, ranks);
+    const winners = ranks.map((r, i) => r === best ? i : -1).filter(i => i >= 0);
+    if(winners.length === 1) rankBest[winners[0]]++;
   });
 
   let html = '';
-  html += '<div class="cmp-head">' + compareTeamCard(a, sa) +
-    '<div class="cmp-vs">' +
-    '<div class="cmp-score">' + h2h.aw + ' : ' + h2h.bw + '</div>' +
-    '<div class="muted">' + (h2h.list.length ? '共 ' + h2h.list.length + ' 次交手' + (h2h.dr ? '（' + h2h.dr + ' 平）' : '') : '尚未交手') + '</div>' +
-    '</div>' + compareTeamCard(b, sb) + '</div>';
+  if(ids.length === 2){
+    const p = pairs[0];
+    html += '<div class="cmp-head two">' + compareTeamCard(getClub(ids[0]), sums[0]) +
+      '<div class="cmp-vs"><div class="cmp-score">' + p.aw + ' : ' + p.bw + '</div>' +
+      '<div class="muted">' + (p.list.length ? '共 ' + p.list.length + ' 次交手' + (p.dr ? '（' + p.dr + ' 平）' : '') : '尚未交手') + '</div></div>' +
+      compareTeamCard(getClub(ids[1]), sums[1]) + '</div>';
+  } else {
+    html += '<div class="cmp-head three">' + ids.map((id, i) => compareTeamCard(getClub(id), sums[i])).join('') + '</div>';
+    html += '<div class="cmp-pairs">' + pairs.map(p =>
+      '<span class="cmp-pair">' + esc(compareInputValue(getClub(ids[p.i])).split('（')[0]) + ' vs ' +
+      esc(compareInputValue(getClub(ids[p.j])).split('（')[0]) + ' <b>' + p.aw + ':' + p.bw + '</b>' +
+      (p.dr ? '（' + p.dr + ' 平）' : '') + '</span>').join('') + '</div>';
+  }
 
+  // 总体对比
+  const names = ids.map(id => getClub(id).name);
   html += '<div class="section"><h2>总体对比</h2><div class="table-wrap"><table class="cmp-table"><thead><tr>' +
-    '<th style="width:34%">指标</th><th>' + esc(a.name) + '</th><th>' + esc(b.name) + '</th></tr></thead><tbody>';
-  html += compareMetricRow('总场次', sa.played, sb.played, null);
-  html += compareMetricRow('战绩（胜-负-平）', sa.wins + '-' + sa.losses + '-' + sa.draws, sb.wins + '-' + sb.losses + '-' + sb.draws, null);
-  html += compareMetricRow('胜率',
-    '<div>' + sa.winRate + '%</div><div class="cmp-bar"><i style="width:' + sa.winRate + '%"></i></div>',
-    '<div>' + sb.winRate + '%</div><div class="cmp-bar"><i style="width:' + sb.winRate + '%"></i></div>',
-    cmpBetter(sa.winRate, sb.winRate));
-  html += compareMetricRow('小局比分差', cmpDiffText(sa.diff), cmpDiffText(sb.diff), cmpBetter(sa.diff, sb.diff));
-  html += compareMetricRow('近 10 场', cmpFormHtml(sa.log), cmpFormHtml(sb.log), null);
-  html += compareMetricRow('冠军 / 亚军 / 四强',
-    sa.honors.first + ' / ' + sa.honors.second + ' / ' + sa.honors.top4,
-    sb.honors.first + ' / ' + sb.honors.second + ' / ' + sb.honors.top4,
-    cmpBetter(sa.honors.first * 100 + sa.honors.second * 10 + sa.honors.top4,
-              sb.honors.first * 100 + sb.honors.second * 10 + sb.honors.top4));
-  html += compareMetricRow('参赛赛事数', sa.attended.length, sb.attended.length, null);
-  html += compareMetricRow('共同赛事名次占优', aRankWin, bRankWin, cmpBetter(aRankWin, bRankWin));
+    '<th style="width:30%">指标</th>' + names.map(n => '<th>' + esc(n) + '</th>').join('') + '</tr></thead><tbody>';
+  html += cmpMetricRow('总场次', sums.map(s => s.played), -1);
+  html += cmpMetricRow('战绩（胜-负-平）', sums.map(s => s.wins + '-' + s.losses + '-' + s.draws), -1);
+  html += cmpMetricRow('胜率',
+    sums.map(s => '<div>' + s.winRate + '%</div><div class="cmp-bar"><i style="width:' + s.winRate + '%"></i></div>'),
+    cmpBestIndex(sums.map(s => s.winRate), 'max'));
+  html += cmpMetricRow('小局比分差', sums.map(s => cmpDiffText(s.diff)), cmpBestIndex(sums.map(s => s.diff), 'max'));
+  html += cmpMetricRow('近 10 场', sums.map(s => cmpFormHtml(s.log)), -1);
+  html += cmpMetricRow('冠军 / 亚军 / 四强',
+    sums.map(s => s.honors.first + ' / ' + s.honors.second + ' / ' + s.honors.top4),
+    cmpBestIndex(sums.map(s => s.honors.first * 100 + s.honors.second * 10 + s.honors.top4), 'max'));
+  html += cmpMetricRow('参赛赛事数', sums.map(s => s.attended.length), -1);
+  html += cmpMetricRow('共同赛事名次占优', rankBest, cmpBestIndex(rankBest, 'max'));
   html += '</tbody></table></div></div>';
 
-  // 交手记录
-  html += '<div class="section"><h2>交手记录（' + h2h.list.length + '）</h2>';
-  if(!h2h.list.length){
-    html += '<div class="empty" style="padding:18px">两队还没有交手记录。可以先看下面的「共同对手」。</div>';
+  // 相互交手
+  const totalH2h = pairs.reduce((n, p) => n + p.list.length, 0);
+  html += '<div class="section"><h2>相互交手（' + totalH2h + ' 场）</h2>';
+  if(!totalH2h){
+    html += '<div class="empty" style="padding:18px">选中的队伍之间还没有交手记录。可以先看下面的「共同对手」。</div>';
   } else {
-    html += '<div class="table-wrap"><table><thead><tr><th>日期</th><th>赛事</th><th>比分（' + esc(a.shortName || a.name) + ' 视角）</th><th>结果</th></tr></thead><tbody>';
-    h2h.list.slice().reverse().forEach(x => {
-      const res = x.win === true ? '胜' : x.win === false ? '负' : '平';
-      const cls = x.win === true ? 'ok-text' : x.win === false ? 'warn-text' : 'muted';
-      html += '<tr><td>' + esc(x.t.date || '—') + '</td>' +
-        '<td><a class="clickable" onclick="openTournament(\'' + x.t.id + '\')">' + esc(x.t.name) + '</a></td>' +
-        '<td><b>' + x.gf + ' : ' + x.ga + '</b></td>' +
-        '<td class="' + cls + '">' + res + '</td></tr>';
+    pairs.forEach(p => {
+      if(!p.list.length) return;
+      const an = getClub(ids[p.i]).shortName || getClub(ids[p.i]).name;
+      const bn = getClub(ids[p.j]).shortName || getClub(ids[p.j]).name;
+      html += '<h3 class="cmp-sub">' + esc(an) + ' vs ' + esc(bn) + '：' + p.aw + ' : ' + p.bw +
+        (p.dr ? '（' + p.dr + ' 平）' : '') + '</h3>';
+      html += '<div class="table-wrap"><table><thead><tr><th>日期</th><th>赛事</th><th>比分（' + esc(an) + ' 视角）</th><th>结果</th></tr></thead><tbody>';
+      p.list.slice().reverse().forEach(x => {
+        const res = x.win === true ? '胜' : x.win === false ? '负' : '平';
+        const cls = x.win === true ? 'ok-text' : x.win === false ? 'warn-text' : 'muted';
+        html += '<tr><td>' + esc(x.t.date || '—') + '</td>' +
+          '<td><a class="clickable" onclick="openTournament(\'' + x.t.id + '\')">' + esc(x.t.name) + '</a></td>' +
+          '<td><b>' + x.gf + ' : ' + x.ga + '</b></td><td class="' + cls + '">' + res + '</td></tr>';
+      });
+      html += '</tbody></table></div>';
     });
-    html += '</tbody></table></div>';
   }
   html += '</div>';
 
   // 共同对手
   html += '<div class="section"><h2>共同对手（' + common.length + '）</h2>';
   if(!common.length){
-    html += '<div class="empty" style="padding:18px">没有双方都打过的对手。</div>';
+    html += '<div class="empty" style="padding:18px">没有所有队伍都打过的对手。</div>';
   } else {
-    html += '<div class="table-wrap"><table><thead><tr><th>对手</th><th>' + esc(a.shortName || a.name) + '</th><th>' + esc(b.shortName || b.name) + '</th><th>占优</th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>对手</th>' +
+      ids.map(id => '<th>' + esc(getClub(id).shortName || getClub(id).name) + '</th>').join('') +
+      '<th>占优</th></tr></thead><tbody>';
     common.slice(0, 20).forEach(r => {
-      const rate = o => (o.w + o.l) ? o.w / (o.w + o.l) : 0;
-      const ra = rate(r.a), rb = rate(r.b);
-      const who = ra > rb ? 'a' : rb > ra ? 'b' : null;
+      const rates = r.recs.map(o => (o.w + o.l) ? o.w / (o.w + o.l) : 0);
+      const best = rates.indexOf(Math.max.apply(null, rates));
+      const bestCount = rates.filter(x => x === rates[best]).length;
+      const who = bestCount === 1 ? best : -1;
       const fmt = o => o.w + '-' + o.l + (o.d ? '-' + o.d : '');
       html += '<tr><td>' + teamSwatch(r.id, true) + '</td>' +
-        '<td class="' + (who === 'a' ? 'cmp-better' : '') + '">' + fmt(r.a) + '</td>' +
-        '<td class="' + (who === 'b' ? 'cmp-better' : '') + '">' + fmt(r.b) + '</td>' +
-        '<td>' + (who === 'a' ? esc(a.shortName || a.name) : who === 'b' ? esc(b.shortName || b.name) : '—') + '</td></tr>';
+        r.recs.map((o, i) => '<td class="' + (i === who ? 'cmp-better' : '') + '">' + fmt(o) + '</td>').join('') +
+        '<td>' + (who >= 0 ? esc(getClub(ids[who]).shortName || getClub(ids[who]).name) : '—') + '</td></tr>';
     });
     html += '</tbody></table></div>';
     if(common.length > 20) html += '<p class="muted" style="margin-top:6px">仅显示前 20 个对手。</p>';
@@ -3974,16 +4103,18 @@ function renderCompare(){
   // 共同赛事
   html += '<div class="section"><h2>共同赛事（' + shared.length + '）</h2>';
   if(!shared.length){
-    html += '<div class="empty" style="padding:18px">没有共同参加过的赛事。</div>';
+    html += '<div class="empty" style="padding:18px">没有所有队伍都参加过的赛事。</div>';
   } else {
-    html += '<div class="table-wrap"><table><thead><tr><th>赛事</th><th>日期</th><th>' + esc(a.shortName || a.name) + ' 名次</th><th>' + esc(b.shortName || b.name) + ' 名次</th></tr></thead><tbody>';
+    html += '<div class="table-wrap"><table><thead><tr><th>赛事</th><th>日期</th>' +
+      ids.map(id => '<th>' + esc(getClub(id).shortName || getClub(id).name) + ' 名次</th>').join('') +
+      '</tr></thead><tbody>';
     shared.slice(0, 12).forEach(x => {
-      const aBetter = x.ra && x.rb && x.ra < x.rb;
-      const bBetter = x.ra && x.rb && x.rb < x.ra;
+      const valid = x.ranks.filter(r => r != null);
+      const best = valid.length ? Math.min.apply(null, valid) : null;
       html += '<tr><td><a class="clickable" onclick="openTournament(\'' + x.t.id + '\')">' + esc(x.t.name) + '</a></td>' +
         '<td>' + esc(x.t.date || '—') + '</td>' +
-        '<td class="' + (aBetter ? 'cmp-better' : '') + '">' + (x.ra ? '#' + x.ra : '—') + '</td>' +
-        '<td class="' + (bBetter ? 'cmp-better' : '') + '">' + (x.rb ? '#' + x.rb : '—') + '</td></tr>';
+        x.ranks.map(r => '<td class="' + (r != null && r === best && valid.filter(v => v === best).length === 1 ? 'cmp-better' : '') + '">' +
+          (r ? '#' + r : '—') + '</td>').join('') + '</tr>';
     });
     html += '</tbody></table></div>';
     if(shared.length > 12) html += '<p class="muted" style="margin-top:6px">仅显示最近 12 项。</p>';
@@ -3994,19 +4125,19 @@ function renderCompare(){
   rememberCompare();
 }
 function copyCompareText(){
-  const a = getClub(compareState.a), b = getClub(compareState.b);
-  if(!a || !b){ toast('先选两支队伍', 'err'); return; }
-  const sa = teamCompareSummary(a.id), sb = teamCompareSummary(b.id);
-  const h2h = compareHeadToHead(sa, sb);
-  const lines = [
-    '【' + a.name + ' vs ' + b.name + '】',
-    '交手：' + h2h.aw + ' : ' + h2h.bw + (h2h.dr ? '（' + h2h.dr + ' 平）' : ''),
-    '总场次：' + sa.played + ' vs ' + sb.played,
-    '胜率：' + sa.winRate + '% vs ' + sb.winRate + '%',
-    '比分差：' + cmpDiffText(sa.diff) + ' vs ' + cmpDiffText(sb.diff),
-    '冠军/亚军/四强：' + sa.honors.first + '/' + sa.honors.second + '/' + sa.honors.top4 +
-      ' vs ' + sb.honors.first + '/' + sb.honors.second + '/' + sb.honors.top4
-  ];
+  const ids = compareState.ids.filter(id => getClub(id));
+  if(ids.length < 2){ toast('先选两支队伍', 'err'); return; }
+  const sums = ids.map(id => teamCompareSummary(id));
+  const pairs = comparePairs(sums);
+  const lines = ['【' + ids.map(id => getClub(id).name).join(' vs ') + '】'];
+  pairs.forEach(p => {
+    lines.push(getClub(ids[p.i]).name + ' vs ' + getClub(ids[p.j]).name + '：' + p.aw + ' : ' + p.bw + (p.dr ? '（' + p.dr + ' 平）' : ''));
+  });
+  ids.forEach((id, i) => {
+    const s = sums[i];
+    lines.push(getClub(id).name + '：' + s.played + ' 场 · 胜率 ' + s.winRate + '% · 比分差 ' + cmpDiffText(s.diff) +
+      ' · 冠/亚/四强 ' + s.honors.first + '/' + s.honors.second + '/' + s.honors.top4);
+  });
   const text = lines.join('\n');
   const done = () => toast('对比文本已复制', 'ok');
   if(navigator.clipboard && navigator.clipboard.writeText){

@@ -25,19 +25,13 @@
     <a href="javascript:void(0)" data-view="compare" class="nav-link">对比</a>
   </nav>
 
-  <div class="topbar-right">
-    <button class="storage-pill ok" id="storage-pill" onclick="openStoragePanel()" title="存储与备份">
-      <span class="sp-dot"></span><span id="storage-pill-text">存储就绪</span>
-    </button>
-    <div class="searchbox">
-      <input id="search-input" type="text" placeholder="搜索比赛 / 队伍…" autocomplete="off">
-    </div>
-    <div class="data-actions">
-      <button class="btn btn-ghost" onclick="exportData()" title="导出全部数据为 JSON">导出</button>
-      <button class="btn btn-ghost" onclick="triggerImport()" title="从 JSON 导入（覆盖）">导入</button>
-      <button class="btn btn-ghost btn-danger-text" onclick="confirmClear()" title="清空全部本地数据">清空</button>
-    </div>
+  <div class="searchbox">
+    <input id="search-input" type="text" placeholder="搜索比赛 / 队伍…" autocomplete="off">
   </div>
+
+  <button class="storage-pill ok" id="storage-pill" onclick="openStoragePanel()" title="存储状态 / 备份 / 导出导入 / 清空">
+    <span class="sp-dot"></span><span id="storage-pill-text">存储就绪</span>
+  </button>
 </header>
 
 <div id="storage-alert" class="storage-alert" style="display:none"></div>
