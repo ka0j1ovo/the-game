@@ -1143,8 +1143,8 @@ function initMultiTabGuard(){
   window.addEventListener('storage', e => {
     if(e.key === STORAGE_KEY && e.newValue) onOtherTabSave(Date.now());
   });
-  window.addEventListener('pagehide', () => { flushPendingSave(); });
-  document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'hidden') flushPendingSave(); });
+  window.addEventListener('pagehide', () => { flushPendingSave(); try{ stopCameraStream(); }catch(e){} });
+  document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'hidden'){ flushPendingSave(); try{ stopCameraStream(); }catch(e){} } });
 }
 function announceSave(now){
   if(!syncChannel) return;
@@ -3455,7 +3455,10 @@ function confirmTeamPicker(){
    弹窗 / 确认
    ============================================================ */
 function openModal(id){ $(id).classList.add('open'); }
-function closeModal(id){ $(id).classList.remove('open'); }
+function closeModal(id){
+  if(id === 'modal-bulk' && typeof closeCamera === 'function') closeCamera();
+  $(id).classList.remove('open');
+}
 let promptCallback = null;
 function promptDialog(title, message, defaultValue, cb){
   $('prompt-title').textContent = title;
@@ -3816,6 +3819,10 @@ function openBulkEntry(stageId){
   $('bulk-api-model').value = cfg.model || 'gpt-4o-mini';
   $('bulk-api-key').value = cfg.key || '';
   $('bulk-image').value = '';
+  $('bulk-image-capture').value = '';
+  $('bulk-image-preview').innerHTML = '';
+  cameraShotFile = null;
+  closeCamera();
   $('bulk-ocr-status').textContent = '';
   openModal('modal-bulk');
   setTimeout(() => { const el = $('bulk-text'); if(el) el.focus(); }, 40);
@@ -4013,6 +4020,113 @@ function ocrJsonToText(obj){
   });
   return lines.join('\n');
 }
+/* ---------- 相机拍摄（识图用） ---------- */
+let cameraStream = null;
+let cameraFacing = 'environment';
+let cameraShotFile = null;
+
+function cameraSupported(){
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+function bulkOcrConfigured(){
+  return ['bulk-api-base', 'bulk-api-model', 'bulk-api-key'].every(id => {
+    const el = $(id);
+    return el && el.value.trim();
+  });
+}
+function openCamera(){
+  const st = $('camera-status');
+  if(st) st.textContent = '';
+  if(!cameraSupported()){
+    // 手机/旧浏览器：退回到系统相机（<input capture>）
+    const cap = $('bulk-image-capture');
+    if(cap){ cap.click(); return; }
+    toast('当前浏览器不支持调用相机，请直接选择图片', 'err');
+    return;
+  }
+  $('camera-panel').classList.add('open');
+  startCamera(cameraFacing);
+}
+async function startCamera(facing){
+  stopCameraStream();
+  const st = $('camera-status');
+  try{
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false
+    });
+    const video = $('camera-video');
+    video.srcObject = cameraStream;
+    try{ await video.play(); }catch(e){ /* 自动播放被拦也能手动点 */ }
+    if(st) st.textContent = '';
+  }catch(e){
+    const msg = (e && (e.name === 'NotAllowedError' ? '相机权限被拒绝' : e.message)) || e;
+    if(st) st.textContent = '无法打开相机：' + msg + '（可直接选择本地图片）';
+    setTimeout(() => { if(!cameraStream) closeCamera(); }, 1600);
+  }
+}
+function stopCameraStream(){
+  if(cameraStream){
+    try{ cameraStream.getTracks().forEach(t => t.stop()); }catch(e){}
+    cameraStream = null;
+  }
+  const v = $('camera-video');
+  if(v) v.srcObject = null;
+}
+function closeCamera(){
+  stopCameraStream();
+  const p = $('camera-panel');
+  if(p) p.classList.remove('open');
+  const st = $('camera-status');
+  if(st) st.textContent = '';
+}
+async function switchCamera(){
+  cameraFacing = cameraFacing === 'environment' ? 'user' : 'environment';
+  await startCamera(cameraFacing);
+}
+function setBulkImageFile(file){
+  cameraShotFile = file;
+  try{
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    $('bulk-image').files = dt.files;
+  }catch(e){ /* 旧浏览器用 cameraShotFile 兜底 */ }
+}
+function onBulkImageChange(input){
+  let f = input && input.files && input.files[0];
+  if(f && input.id === 'bulk-image-capture'){
+    setBulkImageFile(f);
+    f = $('bulk-image').files && $('bulk-image').files[0] || f;
+  } else if(f){
+    cameraShotFile = f;
+  }
+  const box = $('bulk-image-preview');
+  if(!box) return;
+  if(!f){ box.innerHTML = ''; return; }
+  try{
+    box.innerHTML = '<img src="' + URL.createObjectURL(f) + '" alt="待识别图片">';
+  }catch(e){ box.innerHTML = ''; }
+}
+async function capturePhoto(){
+  const video = $('camera-video');
+  if(!cameraStream || !video || !video.videoWidth){ toast('相机还没准备好，稍等一下再拍', 'err'); return; }
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const g = canvas.getContext('2d');
+  if(!g){ toast('当前浏览器无法抓取画面', 'err'); return; }
+  g.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.92));
+  if(!blob){ toast('拍照失败，请重试', 'err'); return; }
+  const file = new File([blob], 'camera-' + Date.now() + '.jpg', { type: 'image/jpeg' });
+  setBulkImageFile(file);
+  onBulkImageChange($('bulk-image'));
+  closeCamera();
+  toast('已拍摄，正在识别…');
+  if(bulkOcrConfigured()) bulkOcrRecognize();
+  else $('bulk-ocr-status').textContent = '已拍摄。填写接口地址、模型和 Key 后点「识别并填入文本」。';
+}
+
 /* 把本赛事参赛名单写进提示词，让模型自己往名单上靠 */
 function buildOcrPrompt(roster){
   const list = (roster || []).map(c => {
@@ -4059,7 +4173,7 @@ function correctOcrTeams(obj, roster){
 
 async function bulkOcrRecognize(){
   const status = $('bulk-ocr-status');
-  const file = ($('bulk-image').files || [])[0];
+  const file = cameraShotFile || ($('bulk-image').files || [])[0];
   if(!file){ status.textContent = '请先选择一张赛制框图/对阵表截图'; return; }
   const cfg = {
     base: $('bulk-api-base').value.trim(),
@@ -4130,7 +4244,11 @@ async function init(){
   });
   // 键盘：Esc 关闭弹窗
   document.addEventListener('keydown', (e) => {
-    if(e.key === 'Escape') document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open'));
+    if(e.key === 'Escape'){
+      const cam = $('camera-panel');
+      if(cam && cam.classList.contains('open')){ closeCamera(); return; }
+      document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open'));
+    }
   });
 
   // 读取数据：localStorage 先上屏，IndexedDB 在后台补齐（不阻塞渲染）

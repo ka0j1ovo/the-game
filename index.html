@@ -370,9 +370,15 @@
       <summary>从截图识别（可选，需要你自己的 AI 接口 Key）</summary>
       <div class="bulk-ocr-body">
         <div class="form-grid">
-          <label class="full">赛制框图截图
-            <input type="file" id="bulk-image" accept="image/*">
-          </label>
+          <div class="full">
+            <span class="field-label">赛制框图截图</span>
+            <div class="camera-row">
+              <input type="file" id="bulk-image" accept="image/*" onchange="onBulkImageChange(this)">
+              <button class="btn btn-sm" onclick="openCamera()">📷 通过相机拍摄</button>
+              <input type="file" id="bulk-image-capture" accept="image/*" capture="environment" style="display:none" onchange="onBulkImageChange(this)">
+            </div>
+            <div id="bulk-image-preview" class="bulk-image-preview"></div>
+          </div>
           <label>接口地址
             <input type="text" id="bulk-api-base" placeholder="https://api.openai.com/v1">
           </label>
@@ -387,12 +393,28 @@
           <button class="btn btn-sm" onclick="bulkOcrRecognize()">识别并填入文本</button>
           <span id="bulk-ocr-status" class="muted"></span>
         </div>
-        <p class="muted plain-hint">图片会发送到你填写的接口；Key 只保存在本浏览器（localStorage，不随导出数据带走）。识别结果会先变成文本让你核对，不会直接写入。</p>
+        <p class="muted plain-hint">图片会发送到你填写的接口；Key 只保存在本浏览器（localStorage，不随导出数据带走）。识别结果会先变成文本让你核对，不会直接写入。用相机拍摄后会立刻自动识别。</p>
       </div>
     </details>
 
     <div class="modal-actions">
       <button class="btn" onclick="closeModal('modal-bulk')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 相机拍摄（识图用） ============ -->
+<div class="camera-panel" id="camera-panel">
+  <div class="camera-box">
+    <div class="camera-head">
+      <b>拍摄赛制框图</b>
+      <span id="camera-status" class="muted"></span>
+    </div>
+    <video id="camera-video" autoplay playsinline muted></video>
+    <div class="camera-actions">
+      <button class="btn" onclick="closeCamera()">取消</button>
+      <button class="btn" onclick="switchCamera()">切换摄像头</button>
+      <button class="btn btn-primary" onclick="capturePhoto()">拍照并识别</button>
     </div>
   </div>
 </div>

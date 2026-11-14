@@ -144,6 +144,28 @@ body{
 .bulk-picker .pick-search{flex:1;min-width:240px;margin-bottom:0;resize:vertical;font-family:inherit;line-height:1.5}
 .bulk-picker-create{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--muted);white-space:nowrap}
 .bulk-picker-create input{width:auto}
+
+/* ---------- 相机拍摄 ---------- */
+.field-label{display:block;font-weight:600;font-size:13px;color:var(--muted);margin-bottom:5px}
+.camera-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.camera-row input[type=file]{flex:1;min-width:220px;font-size:13px}
+.bulk-image-preview{margin-top:8px}
+.bulk-image-preview img{max-width:100%;max-height:180px;border:1px solid var(--border);border-radius:6px;display:block}
+.camera-panel{
+  position:fixed;inset:0;background:rgba(12,24,42,.82);z-index:260;
+  display:none;align-items:center;justify-content:center;padding:20px;
+}
+.camera-panel.open{display:flex}
+.camera-box{background:#0f1c2e;border-radius:10px;padding:14px;max-width:920px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.camera-head{display:flex;align-items:center;gap:10px;color:#dce9f7;margin-bottom:10px;font-size:14px}
+.camera-head b{color:#fff}
+.camera-head .muted{color:#9fb3c8 !important}
+#camera-video{width:100%;max-height:62vh;background:#000;border-radius:6px;display:block}
+.camera-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+.camera-actions .btn{background:#1b2c44;border-color:#33506f;color:#e6eef8}
+.camera-actions .btn:hover{background:#26405e;border-color:#4d7099}
+.camera-actions .btn-primary{background:var(--navy-light);border-color:var(--navy-light);color:#fff}
+@media (max-width: 700px){ .camera-actions{justify-content:space-between} }
 .bulk-ocr{margin-top:14px;border-top:1px dashed var(--border);padding-top:10px}
 .bulk-ocr summary{cursor:pointer;color:var(--navy);font-weight:700;font-size:13.5px}
 .bulk-ocr-body{margin-top:10px}
