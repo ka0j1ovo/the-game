@@ -166,6 +166,81 @@ body{
 .camera-actions .btn:hover{background:#26405e;border-color:#4d7099}
 .camera-actions .btn-primary{background:var(--navy-light);border-color:var(--navy-light);color:#fff}
 @media (max-width: 700px){ .camera-actions{justify-content:space-between} }
+
+/* ---------- 首页工作台 ---------- */
+.resume-card{display:flex;align-items:center;gap:14px;background:#eef3f9;border:1px solid #c7d2e0;border-radius:8px;padding:12px 16px;margin-bottom:6px}
+.resume-card .wi-name{font-weight:700;color:var(--navy)}
+.resume-card .wi-meta{font-size:12px;color:var(--muted);margin-top:2px}
+.work-list{display:flex;flex-direction:column;gap:8px}
+.work-item{display:flex;align-items:center;gap:14px;background:#fff;border:1px solid var(--border);border-radius:8px;padding:10px 14px}
+.work-item .wi-main{flex:1;min-width:0}
+.work-item .wi-name{font-weight:700;color:var(--navy);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.work-item .wi-meta{font-size:12px;color:var(--muted);margin-top:2px}
+.work-item .wi-actions{display:flex;gap:6px;flex-shrink:0}
+.progress{height:6px;background:#e6ecf3;border-radius:3px;overflow:hidden;margin-top:6px}
+.progress i{display:block;height:100%;background:linear-gradient(90deg,#3b6ea5,#2e7d4f)}
+
+/* ---------- 赛事锁定 ---------- */
+.lock-banner{background:#fff8e6;border:1px solid #ead6a5;color:#6b4f1d;border-radius:6px;padding:8px 12px;font-size:13px;margin-bottom:12px}
+.tournament-locked .stage-card{background:#fbfcfe}
+.tournament-locked input:disabled,.tournament-locked select:disabled,.tournament-locked textarea:disabled{
+  background:#f1f3f6;color:#65727f;cursor:not-allowed;
+}
+.tournament-locked .team-chip{cursor:not-allowed;opacity:.75}
+.tournament-locked .clickable[onclick]{pointer-events:none;opacity:.5}
+.tournament-locked button:disabled{opacity:.55;cursor:not-allowed}
+
+/* ---------- 一屏录入 ---------- */
+body.focus-open{overflow:hidden}
+.focus-mode{position:fixed;inset:0;z-index:280;background:#f4f6f9;display:none;flex-direction:column}
+.focus-mode.open{display:flex}
+.focus-top{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--navy);color:#fff;flex-shrink:0}
+.focus-title{display:flex;align-items:center;gap:12px;flex:1;min-width:0}
+.focus-title b{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.focus-stage-select{max-width:260px;padding:5px 8px;border-radius:5px;border:1px solid #6b87a8;background:#16283f;color:#fff;font-size:13px}
+.focus-progress{font-size:13px;color:#cfe0f2;white-space:nowrap}
+.focus-body{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 380px;min-height:0}
+.focus-list{overflow:auto;padding:16px 20px}
+.focus-side{border-left:1px solid var(--border);background:#fff;padding:16px;display:flex;flex-direction:column;gap:14px;overflow:auto}
+.focus-group{margin-bottom:16px}
+.focus-group h4{margin:0 0 8px;font-size:13px;color:var(--muted);font-weight:700}
+.focus-row{display:grid;grid-template-columns:minmax(0,1fr) 88px minmax(0,1fr);align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:#fff;margin-bottom:6px;cursor:pointer;font-size:13.5px}
+.focus-row:hover{border-color:var(--navy-light)}
+.focus-row.active{border-color:var(--navy-light);box-shadow:0 0 0 2px rgba(59,110,165,.18);background:#f7fbff}
+.focus-row.done{background:#f2f8f3}
+.focus-row .fa{text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.focus-row .fb{text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.focus-row .sc{text-align:center;font-weight:800;color:var(--navy);font-variant-numeric:tabular-nums;white-space:nowrap}
+.focus-row .sc.sc-empty{color:#b6c2d0;font-weight:600}
+.focus-row .sc.typing{color:#c9a227}
+.focus-current .fc-teams{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;font-size:16px;font-weight:700;color:var(--navy);text-align:center}
+.focus-current .fc-teams span{padding:0 6px}
+.focus-current .fc-teams span.muted{font-size:13px}
+.focus-current .fc-score{font-size:30px;font-weight:800;text-align:center;font-variant-numeric:tabular-nums;color:var(--navy);padding:12px 0;letter-spacing:2px}
+.focus-current .fc-meta{font-size:12px;color:var(--muted);text-align:center;margin-bottom:8px}
+.focus-keys{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+.focus-keys button{padding:9px 0;font-size:14px;font-weight:700}
+.focus-keys .fk-wide{grid-column:span 5}
+.focus-hint{font-size:12px;line-height:1.7;margin:0}
+
+/* ---------- 败者组落位 ---------- */
+.drops-body{max-height:52vh;overflow:auto;padding-right:4px}
+.drops-batch{margin-bottom:16px}
+.drops-batch h4{margin:0 0 8px;font-size:13.5px;color:var(--navy)}
+.drops-batch h4 .muted{font-weight:400;font-size:12px;margin-left:6px}
+.drops-row{display:grid;grid-template-columns:26px 1fr 1fr auto;align-items:center;gap:10px;
+  border:1px solid var(--border);border-radius:6px;padding:7px 10px;margin-bottom:6px;background:#fff;font-size:13px}
+.drops-pos{width:24px;height:24px;line-height:24px;text-align:center;border-radius:12px;background:var(--blue-bg);color:var(--navy);font-weight:800;font-size:12px}
+.drops-dest{font-weight:700;color:var(--navy)}
+.drops-src{color:var(--muted);font-size:12.5px}
+.drops-move{display:flex;gap:4px}
+.drops-move .btn{padding:2px 9px}
+@media (max-width: 900px){
+  .focus-body{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) auto}
+  .focus-side{border-left:none;border-top:1px solid var(--border)}
+  .focus-keys{grid-template-columns:repeat(3,1fr)}
+  .focus-keys .fk-wide{grid-column:span 3}
+}
 .bulk-ocr{margin-top:14px;border-top:1px dashed var(--border);padding-top:10px}
 .bulk-ocr summary{cursor:pointer;color:var(--navy);font-weight:700;font-size:13.5px}
 .bulk-ocr-body{margin-top:10px}
@@ -223,6 +298,7 @@ input[type=color].cell-input{height:24px;padding:0}
 .badge-type{background:#eef3f9;color:#3b6ea5;border:1px solid #c7d2e0}
 .badge-format{background:#eef3f9;color:#5b6b7c;border:1px solid #d4dee9}
 .badge-rank{font-weight:800;color:var(--navy)}
+.badge-gold{background:#fff4d6;color:#8a6d1f;border:1px solid #e6cf8b}
 
 /* ---------- 卡片 ---------- */
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}

@@ -104,7 +104,9 @@
     <div class="view-head">
       <h1 id="tournament-title">赛事</h1>
       <div class="head-actions">
-        <button class="btn btn-primary" onclick="openBulkEntry()" title="粘贴文本批量录入比赛结果">批量录入</button>
+        <button class="btn btn-primary" onclick="openFocusMode()" title="一屏快速录比分">⚡ 开始录入</button>
+        <button class="btn" onclick="openBulkEntry()" title="粘贴文本批量录入比赛结果">批量录入</button>
+        <button class="btn" id="tournament-lock-btn" data-lock-ok="1" onclick="toggleTournamentLock()" title="锁定后赛事只读">🔒 锁定</button>
         <button class="btn" onclick="openTeamPicker('tournament')">+ 添加参赛队伍</button>
         <button class="btn" onclick="addStage()">+ 添加赛制阶段</button>
         <button class="btn btn-danger" onclick="deleteCurrentTournament()">删除赛事</button>
@@ -399,6 +401,41 @@
 
     <div class="modal-actions">
       <button class="btn" onclick="closeModal('modal-bulk')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 败者组落位 ============ -->
+<div class="modal-overlay" id="modal-drops">
+  <div class="modal modal-wide">
+    <h3>败者组落位</h3>
+    <p class="muted" id="drops-subtitle" style="margin-top:-6px;line-height:1.6"></p>
+    <div id="drops-body" class="drops-body"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="resetDrops()">恢复默认顺序</button>
+      <button class="btn" onclick="applyDropsToStage()">重新生成并套用</button>
+      <button class="btn btn-primary" onclick="saveDrops()">保存为模板</button>
+      <button class="btn" onclick="closeModal('modal-drops')">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 一屏录入 ============ -->
+<div class="focus-mode" id="focus-mode">
+  <div class="focus-top">
+    <div class="focus-title">
+      <b id="focus-tournament">赛事</b>
+      <select id="focus-stage-select" class="focus-stage-select" onchange="focusSwitchStage(this.value)"></select>
+    </div>
+    <div class="focus-progress" id="focus-progress"></div>
+    <button class="btn btn-sm" onclick="focusExit()">退出 (Esc)</button>
+  </div>
+  <div class="focus-body">
+    <div class="focus-list" id="focus-list"></div>
+    <div class="focus-side">
+      <div id="focus-current"></div>
+      <div class="focus-keys" id="focus-keys"></div>
+      <p class="focus-hint muted">数字键输入比分（依次按 3、1 = 3:1），Enter 保存并跳下一场；Backspace 退格；↑↓ 切换对局；Esc 退出。</p>
     </div>
   </div>
 </div>

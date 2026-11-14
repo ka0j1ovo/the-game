@@ -1212,6 +1212,32 @@ function render(){
 /* ============================================================
    首页
    ============================================================ */
+function tournamentProgress(t){
+  let total = 0, done = 0;
+  (t.stages || []).forEach(s => (s.matches || []).forEach(m => {
+    if(!m.teamAId || !m.teamBId) return;
+    total++;
+    if(m.scoreA !== '' && m.scoreA != null && m.scoreB !== '' && m.scoreB != null) done++;
+  }));
+  return { total: total, done: done, pending: total - done, noStage: !(t.stages || []).length };
+}
+function rememberLastEntry(tournamentId, stageId){
+  if(!state.meta || typeof state.meta !== 'object') state.meta = {};
+  state.meta.lastEntry = { tournamentId: tournamentId, stageId: stageId, at: Date.now() };
+}
+function resumeLastEntry(){
+  const le = state.meta && state.meta.lastEntry;
+  if(!le) return;
+  const t = getTournament(le.tournamentId);
+  if(!t){ toast('上次录入的赛事已不存在', 'err'); return; }
+  openTournament(t.id);
+  openFocusMode(le.stageId);
+}
+function quickFocus(tid){
+  openTournament(tid);
+  openFocusMode();
+}
+
 function renderDashboard(){
   const c = state.clubs.length, s = state.seasons.length, t = state.tournaments.length;
   const huplCount = state.clubs.filter(x => x.category === 'hupl').length;
@@ -1227,6 +1253,49 @@ function renderDashboard(){
     $('view-dashboard').innerHTML = html;
     return;
   }
+
+  // 继续上次录入
+  const le = state.meta && state.meta.lastEntry;
+  const leT = le && getTournament(le.tournamentId);
+  if(leT){
+    const leStage = leT.stages ? leT.stages.find(x => x.id === le.stageId) : null;
+    const lp = tournamentProgress(leT);
+    html += '<div class="resume-card">' +
+      '<div style="flex:1;min-width:0">' +
+      '<div class="wi-name">继续上次录入：' + esc(leT.name) + (leStage ? ' · ' + esc(leStage.name) : '') + '</div>' +
+      '<div class="wi-meta">' + (lp.pending ? '还剩 ' + lp.pending + ' 场没填' : '这个阶段已经录完了') +
+      ' · ' + fmtDateTime(le.at) + '</div></div>' +
+      '<button class="btn btn-primary" onclick="resumeLastEntry()">' + (lp.pending ? '继续录入' : '打开看看') + '</button>' +
+      '</div>';
+  }
+
+  // 待办：没录完 / 没阶段的赛事
+  const todo = state.tournaments.map(x => ({ t: x, p: tournamentProgress(x) }))
+    .filter(x => !x.t.locked && (x.p.pending > 0 || x.p.noStage))
+    .sort((a, b) => (b.p.pending - a.p.pending) || ((b.t.createdAt || 0) - (a.t.createdAt || 0)));
+  html += '<div class="section"><h2>待办 · 还没录完的赛事 <span class="muted" style="font-weight:400;font-size:13px">（' + todo.length + '）</span></h2>';
+  if(!todo.length){
+    html += '<div class="empty" style="padding:18px">全部录完了 🎉</div>';
+  } else {
+    html += '<div class="work-list">';
+    todo.slice(0, 6).forEach(({ t: tt, p }) => {
+      const pct = p.total ? Math.round(p.done / p.total * 100) : 0;
+      html += '<div class="work-item"><div class="wi-main">' +
+        '<div class="wi-name">' + esc(tt.name) + '</div>' +
+        '<div class="wi-meta">' + (p.noStage ? '还没有赛制阶段' : p.done + '/' + p.total + ' 场已录 · 还剩 ' + p.pending + ' 场') +
+        (tt.seasonId ? ' · ' + esc((getSeason(tt.seasonId) || {}).name || '') : '') + '</div>' +
+        (p.total ? '<div class="progress"><i style="width:' + pct + '%"></i></div>' : '') +
+        '</div><div class="wi-actions">' +
+        (p.noStage
+          ? '<button class="btn btn-sm" onclick="openTournament(\'' + tt.id + '\')">去建阶段</button>'
+          : '<button class="btn btn-sm btn-primary" onclick="quickFocus(\'' + tt.id + '\')">继续录入</button>') +
+        '<button class="btn btn-sm" onclick="openTournament(\'' + tt.id + '\')">打开</button>' +
+        '</div></div>';
+    });
+    html += '</div>';
+    if(todo.length > 6) html += '<p class="muted" style="margin-top:8px"><a class="clickable" onclick="go(\'tournaments\')">查看全部 ' + todo.length + ' 个 →</a></p>';
+  }
+  html += '</div>';
 
   // 当前赛年 HUPL 积分榜
   const latest = state.seasons.slice().sort((a,b) => (b.year||0) - (a.year||0))[0];
@@ -1247,8 +1316,8 @@ function renderDashboard(){
     html += '</div>';
   }
 
-  // 最近赛事（同一张可排序表格，最多 6 条；完整列表见「赛事」页）
-  const recent = state.tournaments.slice().sort((a,b) => (b.createdAt||0) - (a.createdAt||0)).slice(0, 6);
+  // 最近赛事
+  const recent = state.tournaments.slice().sort((a,b) => (b.createdAt||0) - (a.createdAt||0)).slice(0, 5);
   html += '<div class="section"><h2>最近赛事</h2>';
   if(recent.length === 0){
     html += '<div class="empty">暂无赛事。</div>';
@@ -1935,12 +2004,50 @@ function initWcConfig(){
 }
 
 /* ---------------- 赛事详情 ---------------- */
+/* ---------------- 赛事锁定（只读） ---------------- */
+function tournamentIsLocked(t){ return !!(t && t.locked); }
+function blockIfLocked(t){
+  if(tournamentIsLocked(t)){
+    toast('赛事已锁定，先点右上角「🔓 已锁定」解锁', 'err');
+    return true;
+  }
+  return false;
+}
+function toggleTournamentLock(){
+  const t = getTournament(currentTournamentId); if(!t) return;
+  if(t.locked) takeSnapshot('解锁前');
+  t.locked = !t.locked;
+  t.updatedAt = Date.now();
+  saveState();
+  renderTournamentDetail();
+  toast(t.locked ? '已锁定：赛事变为只读' : '已解锁：可以继续编辑', 'ok');
+}
+function applyTournamentLock(t){
+  const view = $('view-tournament-detail');
+  if(!view) return;
+  const locked = tournamentIsLocked(t);
+  view.classList.toggle('tournament-locked', locked);
+  view.querySelectorAll('input, select, textarea, button').forEach(el => {
+    if(el.dataset && el.dataset.lockOk === '1') return;
+    el.disabled = locked;
+  });
+  const btn = $('tournament-lock-btn');
+  if(btn){
+    btn.textContent = locked ? '🔓 已锁定' : '🔒 锁定';
+    btn.classList.toggle('btn-primary', locked);
+  }
+}
+
 function renderTournamentDetail(){
   const t = getTournament(currentTournamentId); if(!t){ go('tournaments'); return; }
   if(!t.type || !SUBTYPES[t.type]) t.type = 'secondary';
   $('tournament-title').textContent = t.name;
 
-  let meta = '<div class="table-wrap"><table class="plain"><tbody>';
+  let meta = '';
+  if(t.locked){
+    meta += '<div class="lock-banner">🔒 这个赛事已锁定，只能查看不能修改。要改先点右上角「🔓 已锁定」。</div>';
+  }
+  meta += '<div class="table-wrap"><table class="plain"><tbody>';
   meta += '<tr><th style="width:110px">名称</th><td><input class="cell-input txt" value="' + esc(t.name) + '" onchange="updateTournamentField(\'name\',this.value)"></td></tr>';
   meta += '<tr><th>分类</th><td>' + typeBadge(t.type) + ' <span class="badge badge-format">' + esc(subtypeLabel(t.subtype)) + '</span>' +
     ' <select class="cell-input" style="width:auto" onchange="updateTournamentField(\'subtype\',this.value)">' +
@@ -1949,6 +2056,8 @@ function renderTournamentDetail(){
     '<option value="">（不归属赛年）</option>' + state.seasons.map(s => '<option value="' + s.id + '"' + (t.seasonId === s.id ? ' selected' : '') + '>' + esc(s.name) + '</option>').join('') + '</select></td></tr>';
   meta += '<tr><th>日期</th><td><input class="cell-input txt" value="' + esc(t.date) + '" onchange="updateTournamentField(\'date\',this.value)"></td></tr>';
   meta += '<tr><th>参赛队伍</th><td>' + (t.teamIds || []).length + ' 支</td></tr>';
+  const champId = t.championId || (t.finalStandings && t.finalStandings[0] && t.finalStandings[0].clubId) || '';
+  meta += '<tr><th>冠军</th><td>' + (champId ? '<span class="badge badge-gold">🏆 ' + esc(clubName(champId)) + '</span>' : '<span class="muted">—</span>') + '</td></tr>';
   meta += '</tbody></table></div>';
   $('tournament-meta').innerHTML = meta;
 
@@ -1957,10 +2066,13 @@ function renderTournamentDetail(){
   (t.stages || []).forEach(s => { if(isBracketFormat(s.format)) drawBracketConnectors(s.id); });
   renderFinalStandings();
   renderPointsFor('tournament', t.id);
+  applyTournamentLock(t);
 }
 function updateTournamentField(field, value){
   const t = getTournament(currentTournamentId); if(!t) return;
+  if(blockIfLocked(t)) return;
   t[field] = value;
+  t.updatedAt = Date.now();
   saveState(); renderTournamentDetail();
 }
 function renderTournamentTeams(t){
@@ -1976,6 +2088,7 @@ function renderTournamentTeams(t){
 }
 function removeTournamentTeam(clubId){
   const t = getTournament(currentTournamentId);
+  if(blockIfLocked(t)) return;
   t.teamIds = t.teamIds.filter(id => id !== clubId);
   // 同步移除各阶段分组中的该队伍
   (t.stages || []).forEach(st => { if(st.config && st.config.groups) st.config.groups.forEach(g => { g.teamIds = g.teamIds.filter(id => id !== clubId); }); });
@@ -1983,6 +2096,7 @@ function removeTournamentTeam(clubId){
 }
 function deleteCurrentTournament(){
   const t = getTournament(currentTournamentId); if(!t) return;
+  if(blockIfLocked(t)) return;
   confirmDialog('删除赛事', '确定删除「' + t.name + '」吗？此操作不可恢复。', () => {
     rememberSeedId(t.id);
     state.tournaments = state.tournaments.filter(x => x.id !== t.id);
@@ -2006,6 +2120,7 @@ function stageCardHtml(t, s){
       '<button class="btn btn-sm btn-danger-text" onclick="deleteStage(\'' + s.id + '\')">删阶段</button>';
   } else {
     html += '<button class="btn btn-sm" onclick="openBulkEntry(\'' + s.id + '\')">批量录入</button>' +
+      (s.format === 'double' ? '<button class="btn btn-sm" onclick="openDropEditor(\'' + s.id + '\')">败者组落位</button>' : '') +
       '<button class="btn btn-sm" onclick="generateMatches(\'' + s.id + '\')">生成对阵</button>' +
       '<button class="btn btn-sm" onclick="addMatch(\'' + s.id + '\')">+ 对局</button>' +
       '<button class="btn btn-sm btn-danger-text" onclick="clearStageTeams(\'' + s.id + '\')">清空队伍</button>' +
@@ -2032,7 +2147,13 @@ function stageCardHtml(t, s){
   html += '</div>';
   return html;
 }
-function updateStageName(id, value){ const s = findStage(id); s.name = value; saveState(); }
+function updateStageName(id, value){
+  const owner = findStageOwner(id);
+  if(blockIfLocked(owner)) return;
+  const s = findStage(id); s.name = value;
+  if(owner) owner.updatedAt = Date.now();
+  saveState();
+}
 function findStage(id){ for(const t of state.tournaments){ const s = (t.stages||[]).find(x => x.id === id); if(s) return s; } return null; }
 function findStageOwner(id){ for(const t of state.tournaments){ if((t.stages||[]).some(x => x.id === id)) return t; } return null; }
 
@@ -2215,14 +2336,18 @@ function matchWinner(m){
 }
 function updateMatchField(stageId, matchId, field, value){
   const s = findStage(stageId); if(!s) return;
+  const owner = findStageOwner(stageId);
+  if(blockIfLocked(owner)) return;
   const m = (s.matches||[]).find(x => x.id === matchId); if(!m) return;
   m[field] = value;
   advanceFromMatch(s, m);
+  if(owner) owner.updatedAt = Date.now();
   saveState();
   refreshStage(stageId);
 }
 function deleteMatch(stageId, matchId){
   const s = findStage(stageId);
+  if(blockIfLocked(findStageOwner(stageId))) return;
   rememberSeedId(matchId);
   s.matches = (s.matches||[]).filter(m => m.id !== matchId);
   saveState();
@@ -2230,6 +2355,7 @@ function deleteMatch(stageId, matchId){
 }
 function addMatch(stageId){
   const s = findStage(stageId);
+  if(blockIfLocked(findStageOwner(stageId))) return;
   const m = { id: uid('m'), round: '', groupId: null, bracket: 'winners', teamAId: '', teamBId: '', scoreA: '', scoreB: '', winnerId: '', note: '' };
   if(s.format === 'group' && s.config.groups && s.config.groups.length) m.groupId = s.config.groups[0].id;
   if(s.format === 'swiss') m.round = '第1轮';
@@ -2271,6 +2397,7 @@ function refreshStage(stageId){
 function generateMatches(stageId){
   const t = findStageOwner(stageId);
   const s = findStage(stageId);
+  if(blockIfLocked(t)) return;
   if(s.format === 'double'){
     const def = (t.teamIds || []).length || 16;
     promptDialog('生成双败对阵', '请输入参赛队伍数量（2–64）。将生成空白框图，队伍可在「快捷填入」中依次填入；非 2 的幂时按上一级 2 的幂生成（多余位置为轮空）：', def, value => {
@@ -2284,6 +2411,7 @@ function generateMatches(stageId){
 }
 function applyGeneratedMatches(stageId, gen){
   const s = findStage(stageId); if(!s) return;
+  if(blockIfLocked(findStageOwner(stageId))) return;
   if(gen.length === 0){ toast('无可生成的对阵（请先选择参赛队伍或分组）', 'err'); return; }
   const doGen = () => {
     s.matches = gen;
@@ -2390,10 +2518,11 @@ function buildSingleBracket(teamIds){
   propagateByes(rounds[0], all);
   return all;
 }
-function buildDoubleBracket(teamIds){
+function buildDoubleBracket(teamIds, dropOrder){
   const ids = (teamIds || []).slice();
   if(ids.length < 2) return [];
   const slots = nextPow2(ids.length);
+  const order = dropOrder || readDropTemplate(slots);
   let W = 0; for(let x = slots; x > 1; x >>= 1) W++;
   const wr = [];
   for(let ri = 0; ri < W; ri++){
@@ -2420,15 +2549,22 @@ function buildDoubleBracket(teamIds){
   });
   const LB = lb.length;
 
-  // WB1 败者 → 败者组第1轮（两两配对）
-  wr[0].forEach((m, j) => { m.loserNextId = lb[0][Math.floor(j / 2)].id; m.loserNextSlot = (j % 2 === 0) ? 'A' : 'B'; });
-  // WB_r (r≥2) 败者 → 败者组第 (2r-2) 轮的上位（A 位）；
-  // 败者组上一轮晋级者固定进入下位（B 位），即「胜者组掉下来的在上，败者组晋级者在下」
+  // WB1 败者 → 败者组第1轮（两两配对，顺序由模板决定）
+  const p0 = permFor(order, 0, wr[0].length);
+  p0.forEach((src, k) => {
+    const m = wr[0][src];
+    if(m && lb[0][k >> 1]){ m.loserNextId = lb[0][k >> 1].id; m.loserNextSlot = (k % 2 === 0) ? 'A' : 'B'; }
+  });
+  // WB_r (r≥2) 败者 → 败者组第 (2r-2) 轮（顺序由模板决定，默认落到上位 A）
   for(let r = 2; r <= W; r++){
     const lbIdx = 2 * r - 3;
     const src = wr[r - 1], dst = lb[lbIdx];
     if(!dst) continue;
-    src.forEach((m, j) => { if(dst[j]){ m.loserNextId = dst[j].id; m.loserNextSlot = 'A'; } });
+    const p = permFor(order, r - 1, src.length);
+    p.forEach((srcIdx, k) => {
+      const m = src[srcIdx];
+      if(m && dst[k]){ m.loserNextId = dst[k].id; m.loserNextSlot = 'A'; }
+    });
   }
   // 败者组胜者晋级：0/2/4…（偶轮）→ 下一轮 merge 1:1 进 B 位；其余两两配对
   for(let r = 0; r < LB - 1; r++){
@@ -2448,6 +2584,135 @@ function buildDoubleBracket(teamIds){
   return all;
 }
 function isBracketFormat(f){ return f === 'single' || f === 'double' || f === 'tiered-double'; }
+
+/* ---------------- 败者组落位模板 ----------------
+   「第几场胜者组的败者，掉进败者组第几场」由一组顺序决定。
+   用户只需要在面板里用 ↑↓ 调整顺序，按队伍数存成模板，下次生成自动套用。
+------------------------------------------------ */
+function identityPerm(n){ const a = []; for(let i = 0; i < n; i++) a.push(i); return a; }
+function isPermutation(arr, n){
+  if(!Array.isArray(arr) || arr.length !== n) return false;
+  const seen = new Set();
+  for(const v of arr){
+    if(typeof v !== 'number' || v < 0 || v >= n || seen.has(v)) return false;
+    seen.add(v);
+  }
+  return seen.size === n;
+}
+function readDropTemplate(slots){
+  const m = state && state.meta && state.meta.dropTemplates;
+  const t = m && m[String(slots)];
+  return Array.isArray(t) ? t : null;
+}
+function writeDropTemplate(slots, order){
+  if(!state.meta || typeof state.meta !== 'object') state.meta = {};
+  if(!state.meta.dropTemplates || typeof state.meta.dropTemplates !== 'object') state.meta.dropTemplates = {};
+  state.meta.dropTemplates[String(slots)] = order;
+  saveState();
+}
+function permFor(order, batchIdx, n){
+  const p = order && Array.isArray(order[batchIdx]) ? order[batchIdx] : null;
+  return isPermutation(p, n) ? p : identityPerm(n);
+}
+function dropBatchesMeta(slots){
+  let W = 0; for(let x = slots; x > 1; x >>= 1) W++;
+  const out = [];
+  for(let i = 0; i < W; i++){
+    out.push({
+      round: i,
+      count: slots / Math.pow(2, i + 1),
+      destRound: i === 0 ? 1 : 2 * i
+    });
+  }
+  return out;
+}
+function dropDestLabel(batch, k){
+  if(batch.round === 0){
+    return '败者组第1轮 M' + (Math.floor(k / 2) + 1) + (k % 2 === 0 ? ' 上位' : ' 下位');
+  }
+  return '败者组第' + batch.destRound + '轮 M' + (k + 1) + ' 上位';
+}
+
+let dropEditor = null;
+function openDropEditor(stageId){
+  const s = findStage(stageId), t = findStageOwner(stageId);
+  if(!s || s.format !== 'double'){ toast('只有双败赛制需要设置败者组落位', 'err'); return; }
+  if(blockIfLocked(t)) return;
+  const winners = (s.matches || []).filter(m => m.bracket === 'winners');
+  const slots = winners.length
+    ? nextPow2(winners.length + 1)
+    : nextPow2(Math.max(2, (t.teamIds || []).length || 2));
+  const meta = dropBatchesMeta(slots);
+  const saved = readDropTemplate(slots);
+  const order = meta.map((b, i) => {
+    const p = saved && saved[i];
+    return isPermutation(p, b.count) ? p.slice() : identityPerm(b.count);
+  });
+  dropEditor = { stageId: stageId, slots: slots, meta: meta, order: order };
+  renderDropsEditor();
+  openModal('modal-drops');
+}
+function renderDropsEditor(){
+  if(!dropEditor) return;
+  const { slots, meta, order } = dropEditor;
+  $('drops-subtitle').textContent = slots + ' 队：决定「第几场胜者组的败者」掉进「败者组第几场」。点 ↑↓ 调整顺序，不用写规则。';
+  let html = '';
+  meta.forEach((b, bi) => {
+    html += '<div class="drops-batch">' +
+      '<h4>胜者组第' + (b.round + 1) + '轮（' + b.count + ' 场）' +
+      '<span class="muted">→ 败者组第' + b.destRound + '轮</span></h4>';
+    order[bi].forEach((src, k) => {
+      html += '<div class="drops-row">' +
+        '<span class="drops-pos">' + (k + 1) + '</span>' +
+        '<span class="drops-dest">' + esc(dropDestLabel(b, k)) + '</span>' +
+        '<span class="drops-src">← 胜者组 M' + (src + 1) + ' 的败者</span>' +
+        '<span class="drops-move">' +
+        '<button class="btn btn-sm" onclick="moveDrop(' + bi + ',' + k + ',-1)"' + (k === 0 ? ' disabled' : '') + '>↑</button>' +
+        '<button class="btn btn-sm" onclick="moveDrop(' + bi + ',' + k + ',1)"' + (k === b.count - 1 ? ' disabled' : '') + '>↓</button>' +
+        '</span></div>';
+    });
+    html += '</div>';
+  });
+  $('drops-body').innerHTML = html;
+}
+function moveDrop(bi, k, dir){
+  if(!dropEditor) return;
+  const arr = dropEditor.order[bi];
+  const j = k + dir;
+  if(j < 0 || j >= arr.length) return;
+  const tmp = arr[k]; arr[k] = arr[j]; arr[j] = tmp;
+  renderDropsEditor();
+}
+function resetDrops(){
+  if(!dropEditor) return;
+  dropEditor.order = dropEditor.meta.map(b => identityPerm(b.count));
+  renderDropsEditor();
+}
+function saveDrops(){
+  if(!dropEditor) return;
+  writeDropTemplate(dropEditor.slots, dropEditor.order);
+  const slots = dropEditor.slots;
+  closeModal('modal-drops');
+  dropEditor = null;
+  toast('已保存 ' + slots + ' 队落位模板，下次生成双败对阵时自动套用', 'ok');
+}
+function applyDropsToStage(){
+  if(!dropEditor) return;
+  const s = findStage(dropEditor.stageId);
+  const t = findStageOwner(dropEditor.stageId);
+  if(!s || !t) return;
+  const hasScore = (s.matches || []).some(m =>
+    m.scoreA !== '' && m.scoreA != null && m.scoreB !== '' && m.scoreB != null);
+  if(hasScore){
+    toast('这个阶段已经录入比分，重排会打乱晋级链；请先删掉阶段重新生成', 'err');
+    return;
+  }
+  writeDropTemplate(dropEditor.slots, dropEditor.order);
+  applyGeneratedMatches(dropEditor.stageId, buildDoubleBracket(t.teamIds || [], dropEditor.order));
+  closeModal('modal-drops');
+  dropEditor = null;
+  toast('已按新顺序重新生成双败对阵', 'ok');
+}
 
 /* 分级双败（最多 10 队）：
    种子 1-2 → 胜者组第2轮；种子 3-6 → 胜者组第1轮；种子 7-10 → 败者组第1轮 */
@@ -2599,20 +2864,26 @@ function drawBracketConnectors(stageId){
 /* 阶段配置操作 */
 function addStage(){
   const t = getTournament(currentTournamentId); if(!t) return;
+  if(blockIfLocked(t)) return;
   t.stages.push(newStage('single', t.teamIds));
+  t.updatedAt = Date.now();
   saveState(); renderTournamentDetail(); toast('已添加阶段');
 }
 function deleteStage(stageId){
   const t = findStageOwner(stageId);
+  if(blockIfLocked(t)) return;
   confirmDialog('删除阶段', '确定删除该赛制阶段及其对局吗？', () => {
     rememberSeedId(stageId);
     t.stages = (t.stages||[]).filter(s => s.id !== stageId);
+    t.updatedAt = Date.now();
     saveState(); renderTournamentDetail();
   });
 }
 /* 一键清空本阶段赛程中的队伍与比分（保留轮次 / 对局结构 / 分组种子 / 阶段名次表） */
 function clearStageTeams(stageId){
   const s = findStage(stageId); if(!s) return;
+  const owner = findStageOwner(stageId);
+  if(blockIfLocked(owner)) return;
   const ms = s.matches || [];
   const filled = ms.filter(m => m.teamAId || m.teamBId || m.winnerId ||
     (m.scoreA !== '' && m.scoreA != null) || (m.scoreB !== '' && m.scoreB != null));
@@ -2621,6 +2892,7 @@ function clearStageTeams(stageId){
     '将清空本阶段 ' + filled.length + ' 场对局中的队伍、比分和胜者（共 ' + ms.length + ' 场对局，保留轮次与对阵结构）。此操作不可恢复，确定吗？',
     () => {
       ms.forEach(m => { m.teamAId = ''; m.teamBId = ''; m.scoreA = ''; m.scoreB = ''; m.winnerId = ''; });
+      if(owner) owner.updatedAt = Date.now();
       saveState();
       refreshStage(stageId);
       toast('已清空 ' + filled.length + ' 场对局的队伍与比分');
@@ -2628,14 +2900,18 @@ function clearStageTeams(stageId){
 }
 function changeStageFormat(stageId, format){
   const s = findStage(stageId);
+  const owner = findStageOwner(stageId);
+  if(blockIfLocked(owner)) return;
   s.format = format;
   if(format === 'group'){ if(!s.config.groups) s.config.groups = [{ id: uid('g'), name: 'A组', teamIds: [] }]; }
   if(format === 'swiss'){ if(!s.config.rounds) s.config.rounds = 5; }
   if(format === 'wc'){ if(!s.config.groups || !s.config.groups[0] || !s.config.groups[0].seeds) s.config = initWcConfig(); }
+  if(owner) owner.updatedAt = Date.now();
   saveState(); renderTournamentDetail();
 }
 function renameGroup(stageId, groupId, value){
   const s = findStage(stageId);
+  if(blockIfLocked(findStageOwner(stageId))) return;
   const g = s.config.groups.find(x => x.id === groupId); if(g) g.name = value;
   saveState();
 }
@@ -2645,12 +2921,14 @@ function groupLetter(n){
 }
 function addGroup(stageId){
   const s = findStage(stageId);
+  if(blockIfLocked(findStageOwner(stageId))) return;
   const n = s.config.groups.length + 1;
   s.config.groups.push({ id: uid('g'), name: groupLetter(n), teamIds: [] });
   saveState(); renderTournamentDetail();
 }
 function removeGroupTeam(stageId, groupId, clubId){
   const s = findStage(stageId);
+  if(blockIfLocked(findStageOwner(stageId))) return;
   const g = s.config.groups.find(x => x.id === groupId);
   g.teamIds = g.teamIds.filter(id => id !== clubId);
   saveState(); renderTournamentDetail();
@@ -3048,10 +3326,14 @@ function renderFinalStandings(){
       '<td><span class="clickable muted" onclick="deleteFinalStanding(' + i + ')">×</span></td></tr>';
   });
   if(t.finalStandings.length === 0){
-    html += '<tr><td colspan="4" class="muted" style="text-align:center;padding:14px">暂无名次，点击下方「+ 添加名次」</td></tr>';
+    html += '<tr><td colspan="4" class="muted" style="text-align:center;padding:14px">暂无名次，点击下方「自动生成名次」或「+ 添加名次」</td></tr>';
   }
   html += '</tbody></table></div>';
-  html += '<button class="btn btn-sm" style="margin-top:8px" onclick="addFinalStanding()">+ 添加名次</button>';
+  html += '<div class="row-inline" style="margin-top:8px;gap:8px">' +
+    '<button class="btn btn-sm btn-primary" onclick="autoFinalStandings()">⚡ 自动生成名次</button>' +
+    '<button class="btn btn-sm" onclick="addFinalStanding()">+ 添加名次</button>' +
+    (t.championId ? '<span class="muted" style="font-size:12.5px">冠军：' + esc(clubName(t.championId)) + '</span>' : '') +
+    '</div>';
   el.innerHTML = html;
 }
 function finalTeamSelect(t, selected, idx){
@@ -3063,21 +3345,134 @@ function finalTeamSelect(t, selected, idx){
 }
 function updateFinalStanding(idx, field, value){
   const t = getTournament(currentTournamentId); if(!t) return;
+  if(blockIfLocked(t)) return;
   const row = t.finalStandings[idx]; if(!row) return;
   row[field] = (field === 'rank') ? (parseInt(value) || 0) : value;
+  t.updatedAt = Date.now();
   sortFinalStandings(t);
   saveState(); renderFinalStandings();
 }
 function addFinalStanding(){
   const t = getTournament(currentTournamentId);
+  if(blockIfLocked(t)) return;
   t.finalStandings = t.finalStandings || [];
   t.finalStandings.push({ rank: t.finalStandings.length + 1, clubId: '', note: '' });
   saveState(); renderFinalStandings();
 }
 function deleteFinalStanding(idx){
   const t = getTournament(currentTournamentId);
+  if(blockIfLocked(t)) return;
   t.finalStandings.splice(idx, 1);
   saveState(); renderFinalStandings();
+}
+
+/* ---------------- 自动生成最终名次 ---------------- */
+/* 对局到决赛的层数：0 = 决赛，数字越大越早出局 */
+function bracketDepths(stage){
+  const byId = new Map(((stage && stage.matches) || []).map(m => [m.id, m]));
+  const memo = new Map();
+  const visiting = new Set();
+  function depth(m){
+    if(memo.has(m.id)) return memo.get(m.id);
+    if(visiting.has(m.id)) return 0;
+    visiting.add(m.id);
+    let d = 0;
+    if(m.nextId && byId.has(m.nextId)) d = 1 + depth(byId.get(m.nextId));
+    visiting.delete(m.id);
+    memo.set(m.id, d);
+    return d;
+  }
+  ((stage && stage.matches) || []).forEach(depth);
+  return memo;
+}
+/* 依据对阵/比分推导名次：先淘汰赛，再小组/瑞士，最后是没出场的队伍 */
+function computeTournamentRanking(t){
+  const out = [];
+  const used = new Set();
+  const push = (id, note) => {
+    if(!id || used.has(id)) return;
+    used.add(id);
+    out.push({ clubId: id, note: note || '' });
+  };
+  const bracketStages = (t.stages || []).filter(s => isBracketFormat(s.format));
+  if(bracketStages.length){
+    const s = bracketStages[bracketStages.length - 1];
+    const ms = s.matches || [];
+    const depths = bracketDepths(s);
+    const lossDepth = new Map();
+    const wins = new Map();
+    let terminal = null;
+    ms.forEach(m => {
+      const w = matchWinner(m);
+      if(!w || w === 'draw') return;
+      wins.set(w, (wins.get(w) || 0) + 1);
+      const loser = w === m.teamAId ? m.teamBId : m.teamAId;
+      if(!loser) return;
+      const d = depths.has(m.id) ? depths.get(m.id) : 99;
+      if(!lossDepth.has(loser) || d < lossDepth.get(loser)) lossDepth.set(loser, d);
+      if(!m.nextId) terminal = m;
+    });
+    if(terminal){
+      const champ = matchWinner(terminal);
+      const runner = champ === terminal.teamAId ? terminal.teamBId : terminal.teamAId;
+      push(champ, '冠军');
+      push(runner, '亚军');
+    }
+    const bracketTeams = new Set();
+    ms.forEach(m => { if(m.teamAId) bracketTeams.add(m.teamAId); if(m.teamBId) bracketTeams.add(m.teamBId); });
+    Array.from(bracketTeams).filter(id => !used.has(id)).sort((a, b) => {
+      const da = lossDepth.has(a) ? lossDepth.get(a) : 999;
+      const db = lossDepth.has(b) ? lossDepth.get(b) : 999;
+      if(da !== db) return da - db;
+      const wa = wins.get(a) || 0, wb = wins.get(b) || 0;
+      if(wa !== wb) return wb - wa;
+      return clubName(a).localeCompare(clubName(b), 'zh');
+    }).forEach(id => push(id, ''));
+  }
+  // 小组赛 / 瑞士轮：按积分、地图差、胜场
+  const rows = [];
+  (t.stages || []).forEach(s => {
+    if(s.format === 'group'){
+      computeGroupStandings(t, s).forEach(({ rows: rs }) => rs.forEach(r => rows.push(r)));
+    } else if(s.format === 'swiss'){
+      const stats = new Map();
+      (s.matches || []).forEach(m => {
+        const w = matchWinner(m);
+        if(!w || w === 'draw') return;
+        const loser = w === m.teamAId ? m.teamBId : m.teamAId;
+        if(!loser) return;
+        if(!stats.has(w)) stats.set(w, { id: w, w: 0, l: 0 });
+        if(!stats.has(loser)) stats.set(loser, { id: loser, w: 0, l: 0 });
+        stats.get(w).w++; stats.get(loser).l++;
+      });
+      stats.forEach(r => rows.push({ id: r.id, w: r.w, l: r.l, pts: r.w, mapW: 0, mapL: 0 }));
+    }
+  });
+  rows.sort((a, b) => (b.pts - a.pts) || ((b.mapW - b.mapL) - (a.mapW - a.mapL)) || (b.w - a.w));
+  rows.forEach(r => push(r.id, ''));
+  (t.teamIds || []).forEach(id => push(id, ''));
+  return out;
+}
+function autoFinalStandings(){
+  const t = getTournament(currentTournamentId); if(!t) return;
+  if(blockIfLocked(t)) return;
+  const ranking = computeTournamentRanking(t);
+  if(!ranking.length){ toast('没有可用于计算名次的比赛结果', 'err'); return; }
+  const top = ranking.slice(0, 4).map((r, i) => (i + 1) + '. ' + (clubName(r.clubId) || '—')).join('\n');
+  confirmDialog('自动生成名次',
+    '将根据现有对阵与比分重算最终名次，覆盖当前名次表。\n\n前四：\n' + top + '\n\n确定继续吗？', () => {
+      const oldNotes = new Map((t.finalStandings || []).map(r => [r.clubId, r.note]));
+      t.finalStandings = ranking.map((r, i) => ({
+        rank: i + 1,
+        clubId: r.clubId,
+        note: oldNotes.get(r.clubId) || r.note || ''
+      }));
+      t.championId = ranking[0].clubId;
+      t.updatedAt = Date.now();
+      saveState();
+      renderTournamentDetail();
+      toast('已生成名次，冠军：' + clubName(t.championId), 'ok');
+    });
 }
 
 /* ============================================================
@@ -3433,7 +3828,9 @@ function confirmTeamPicker(){
   let msg = '已更新队伍';
   if(target === 'tournament'){
     const t = getTournament(currentTournamentId);
+    if(blockIfLocked(t)) return;
     t.teamIds = ids;
+    t.updatedAt = Date.now();
   } else if(target.startsWith('season-points:')){
     getSeason(target.split(':')[1]).points.clubIds = ids;
   } else if(target.startsWith('tournament-points:')){
@@ -3610,6 +4007,233 @@ function buildSampleData(){
   tournaments.push(hudl);
 
   return { version: 1, meta: { tournamentName: 'The Game', countryName: '黄狗国' }, clubs: clubs, seasons: [season], tournaments: tournaments };
+}
+
+/* ============================================================
+   一屏录入模式
+   ============================================================ */
+let focusState = null;
+let focusSaveTimer = null;
+let focusDirty = false;
+
+function focusStageList(t){
+  return (t.stages || []).filter(s => (s.matches || []).length);
+}
+function focusPlayableIndexes(s){
+  const out = [];
+  (s.matches || []).forEach((m, i) => { if(m.teamAId && m.teamBId) out.push(i); });
+  return out;
+}
+function focusIsDone(m){
+  return m.scoreA !== '' && m.scoreA != null && m.scoreB !== '' && m.scoreB != null;
+}
+function focusFirstPendingIndex(s){
+  const list = focusPlayableIndexes(s);
+  if(!list.length) return 0;
+  const hit = list.find(i => !focusIsDone(s.matches[i]));
+  return hit == null ? list[0] : hit;
+}
+function openFocusMode(stageId){
+  const t = getTournament(currentTournamentId); if(!t) return;
+  if(blockIfLocked(t)) return;
+  const stages = focusStageList(t);
+  if(!stages.length){ toast('这个赛事还没有对局，先「生成对阵」或添加赛段', 'err'); return; }
+  const st = (stageId && stages.find(s => s.id === stageId)) || stages[0];
+  focusState = { stageId: st.id, index: focusFirstPendingIndex(st), input: '' };
+  focusDirty = false;
+  rememberLastEntry(t.id, st.id);
+  saveState();
+  $('focus-mode').classList.add('open');
+  document.body.classList.add('focus-open');
+  renderFocusMode();
+}
+function focusSwitchStage(id){
+  if(!focusState) return;
+  const s = findStage(id); if(!s) return;
+  focusState.stageId = id;
+  focusState.index = focusFirstPendingIndex(s);
+  focusState.input = '';
+  rememberLastEntry(currentTournamentId, id);
+  saveState();
+  renderFocusMode();
+}
+function focusExit(){
+  if(focusSaveTimer){ clearTimeout(focusSaveTimer); focusSaveTimer = null; }
+  if(focusDirty){ focusDirty = false; saveState(); }
+  $('focus-mode').classList.remove('open');
+  document.body.classList.remove('focus-open');
+  focusState = null;
+  if(currentTournamentId && view === 'tournament-detail') renderTournamentDetail();
+}
+function focusScheduleSave(){
+  focusDirty = true;
+  if(focusSaveTimer) clearTimeout(focusSaveTimer);
+  focusSaveTimer = setTimeout(() => {
+    focusSaveTimer = null;
+    if(focusDirty){ focusDirty = false; saveState(); }
+  }, 300);
+}
+function renderFocusMode(){
+  if(!focusState) return;
+  const t = getTournament(currentTournamentId); if(!t) return;
+  const s = findStage(focusState.stageId); if(!s) return;
+  $('focus-tournament').textContent = t.name;
+  const stages = focusStageList(t);
+  $('focus-stage-select').innerHTML = stages.map(x =>
+    '<option value="' + x.id + '"' + (x.id === s.id ? ' selected' : '') + '>' + esc(x.name) + '</option>').join('');
+
+  const total = focusPlayableIndexes(s).length;
+  const done = focusPlayableIndexes(s).filter(i => focusIsDone(s.matches[i])).length;
+  $('focus-progress').textContent = done + ' / ' + total + ' 场' + (total === done ? ' · 已录完 🎉' : '');
+
+  // 按轮次分组
+  const groups = [];
+  (s.matches || []).forEach((m, i) => {
+    if(!m.teamAId || !m.teamBId) return;
+    let label = m.round || '未定轮次';
+    if(s.format === 'double' || s.format === 'tiered-double'){
+      label = (m.bracket === 'losers' ? '败者组 · ' : (m.bracket === 'final' ? '总决赛 · ' : '胜者组 · ')) + label;
+    }
+    let g = groups.find(x => x.label === label);
+    if(!g){ g = { label: label, items: [] }; groups.push(g); }
+    g.items.push({ m: m, i: i });
+  });
+  let html = '';
+  if(!groups.length){
+    html = '<div class="empty" style="padding:24px">这个阶段还没有双方队伍都确定的比赛，先去「生成对阵」或补全队伍。</div>';
+  }
+  groups.forEach(g => {
+    html += '<div class="focus-group"><h4>' + esc(g.label) + '</h4>';
+    g.items.forEach(({ m, i }) => {
+      const active = i === focusState.index;
+      const doneRow = focusIsDone(m);
+      let score;
+      if(active && focusState.input){
+        score = '<span class="sc typing">' + focusState.input[0] + ' : ' + (focusState.input[1] == null ? '_' : focusState.input[1]) + '</span>';
+      } else if(doneRow){
+        score = '<span class="sc">' + esc(m.scoreA) + ' : ' + esc(m.scoreB) + '</span>';
+      } else {
+        score = '<span class="sc sc-empty">— : —</span>';
+      }
+      html += '<div class="focus-row' + (active ? ' active' : '') + (doneRow ? ' done' : '') + '" onclick="focusSelectIndex(' + i + ')">' +
+        '<span class="fa">' + esc(clubName(m.teamAId)) + '</span>' +
+        score +
+        '<span class="fb">' + esc(clubName(m.teamBId)) + '</span></div>';
+    });
+    html += '</div>';
+  });
+  $('focus-list').innerHTML = html;
+
+  // 右侧：当前对局 + 快捷比分
+  const m = (s.matches || [])[focusState.index];
+  if(!m){
+    $('focus-current').innerHTML = '<div class="muted">没有可录入的对局</div>';
+    $('focus-keys').innerHTML = '';
+    return;
+  }
+  const typing = focusState.input
+    ? focusState.input[0] + ' : ' + (focusState.input[1] == null ? '_' : focusState.input[1])
+    : (focusIsDone(m) ? m.scoreA + ' : ' + m.scoreB : '_ : _');
+  $('focus-current').innerHTML =
+    '<div class="fc-meta">' + esc(m.round || '未定轮次') + '</div>' +
+    '<div class="fc-teams"><span>' + esc(clubName(m.teamAId)) + '</span><span class="muted" style="font-weight:400">vs</span><span>' + esc(clubName(m.teamBId)) + '</span></div>' +
+    '<div class="fc-score">' + esc(typing) + '</div>';
+
+  const quick = [['3','0'],['3','1'],['3','2'],['2','0'],['2','1'],['1','0'],['0','3'],['1','3'],['2','3'],['0','2'],['0','1']];
+  let keys = quick.map(q => '<button class="btn btn-sm" onclick="focusSetScore(' + q[0] + ',' + q[1] + ')">' + q[0] + ':' + q[1] + '</button>').join('');
+  keys += '<button class="btn btn-sm fk-wide" onclick="focusClearScore()">清空这场比分</button>';
+  keys += '<button class="btn btn-sm fk-wide" onclick="focusSkip()">跳过，下一场 →</button>';
+  $('focus-keys').innerHTML = keys;
+}
+function focusSelectIndex(i){
+  if(!focusState) return;
+  focusState.index = i;
+  focusState.input = '';
+  renderFocusMode();
+}
+function focusMove(delta){
+  if(!focusState) return;
+  const s = findStage(focusState.stageId); if(!s) return;
+  const list = focusPlayableIndexes(s);
+  if(!list.length) return;
+  const pos = list.indexOf(focusState.index);
+  const next = list[Math.min(list.length - 1, Math.max(0, (pos < 0 ? 0 : pos) + delta))];
+  focusSelectIndex(next);
+}
+function focusNextPending(){
+  const s = findStage(focusState.stageId); if(!s) return;
+  const list = focusPlayableIndexes(s);
+  const pos = list.indexOf(focusState.index);
+  const after = list.slice(pos + 1).find(i => !focusIsDone(s.matches[i]));
+  if(after != null){ focusState.index = after; return; }
+  const before = list.find(i => !focusIsDone(s.matches[i]));
+  if(before != null){ focusState.index = before; }
+}
+function focusApply(a, b){
+  const s = findStage(focusState.stageId); if(!s) return;
+  const m = (s.matches || [])[focusState.index];
+  if(!m || !m.teamAId || !m.teamBId){ toast('这场还没有双方队伍', 'err'); return; }
+  m.scoreA = String(a);
+  m.scoreB = String(b);
+  m.winnerId = '';
+  if(isBracketFormat(s.format)) advanceFromMatch(s, m);
+  const owner = findStageOwner(s.id);
+  if(owner) owner.updatedAt = Date.now();
+  focusState.input = '';
+  focusNextPending();
+  focusScheduleSave();
+  renderFocusMode();
+}
+function focusSetScore(a, b){
+  if(!focusState) return;
+  focusApply(a, b);
+}
+function focusClearScore(){
+  if(!focusState) return;
+  const s = findStage(focusState.stageId);
+  const m = s && (s.matches || [])[focusState.index];
+  if(!m) return;
+  m.scoreA = ''; m.scoreB = ''; m.winnerId = '';
+  focusScheduleSave();
+  renderFocusMode();
+}
+function focusSkip(){
+  focusState.input = '';
+  focusNextPending();
+  renderFocusMode();
+}
+function focusKeydown(e){
+  if(!focusState) return;
+  const k = e.key;
+  if(k >= '0' && k <= '9'){
+    if(focusState.input.length < 2) focusState.input += k;
+    renderFocusMode();
+    e.preventDefault();
+    return;
+  }
+  if(k === 'Backspace'){
+    focusState.input = focusState.input.slice(0, -1);
+    renderFocusMode();
+    e.preventDefault();
+    return;
+  }
+  if(k === 'Enter'){
+    e.preventDefault();
+    if(!focusState.input){ focusClearScore(); return; }
+    const a = parseInt(focusState.input[0], 10);
+    const b = focusState.input.length > 1 ? parseInt(focusState.input[1], 10) : 0;
+    focusApply(a, b);
+    return;
+  }
+  if(k === 'ArrowDown' || k === 'ArrowUp'){
+    e.preventDefault();
+    focusMove(k === 'ArrowDown' ? 1 : -1);
+    return;
+  }
+  if(k === 'Escape'){
+    e.preventDefault();
+    focusExit();
+  }
 }
 
 /* ============================================================
@@ -3801,6 +4425,7 @@ function findBulkTarget(s, r){
 function openBulkEntry(stageId){
   const t = getTournament(currentTournamentId);
   if(!t) return;
+  if(blockIfLocked(t)) return;
   const stages = t.stages || [];
   if(!stages.length){ toast('当前赛事还没有阶段，请先添加赛制阶段', 'err'); return; }
   bulkState = { stageId: stageId || stages[0].id, parsed: null, rows: null };
@@ -3918,6 +4543,7 @@ async function bulkImport(){
   if(!bulkState.rows || !bulkState.rows.length){ toast('请先点「解析预览」', 'err'); return; }
   const s = findStage(bulkState.stageId);
   if(!s){ toast('阶段不存在', 'err'); return; }
+  if(blockIfLocked(findStageOwner(s.id))) return;
   const opts = {
     create: $('bulk-create').checked,
     add: $('bulk-add').checked,
@@ -4244,6 +4870,8 @@ async function init(){
   });
   // 键盘：Esc 关闭弹窗
   document.addEventListener('keydown', (e) => {
+    const fm = $('focus-mode');
+    if(fm && fm.classList.contains('open')){ focusKeydown(e); return; }
     if(e.key === 'Escape'){
       const cam = $('camera-panel');
       if(cam && cam.classList.contains('open')){ closeCamera(); return; }
