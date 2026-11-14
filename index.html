@@ -22,6 +22,7 @@
     <a href="javascript:void(0)" data-view="clubs" class="nav-link">俱乐部</a>
     <a href="javascript:void(0)" data-view="seasons" class="nav-link">赛年</a>
     <a href="javascript:void(0)" data-view="tournaments" class="nav-link">赛事</a>
+    <a href="javascript:void(0)" data-view="compare" class="nav-link">对比</a>
   </nav>
 
   <div class="topbar-right">
@@ -127,6 +128,7 @@
     <div class="view-head">
       <h1 id="team-title">队伍档案</h1>
       <div class="head-actions">
+        <button class="btn btn-primary" onclick="startCompare(currentClubId)" title="和其他队伍对比">⚔ 对比</button>
         <button class="btn" onclick="openClubModal(currentClubId)">编辑队伍</button>
         <button class="btn btn-danger" onclick="deleteCurrentClub()">删除队伍</button>
       </div>
@@ -149,6 +151,19 @@
       <h2>对阵成绩（Head-to-Head）</h2>
       <div id="team-h2h"></div>
     </div>
+  </section>
+
+  <!-- ============ 队伍对比 ============ -->
+  <section id="view-compare" class="view">
+    <div class="view-head">
+      <h1>队伍对比</h1>
+      <div class="head-actions">
+        <button class="btn" onclick="swapCompare()" title="交换左右">⇄ 交换</button>
+        <button class="btn" onclick="copyCompareText()" title="复制成文本发群">复制对比</button>
+      </div>
+    </div>
+    <div id="compare-pickers" class="compare-pickers"></div>
+    <div id="compare-body"></div>
   </section>
 
   <!-- ============ 搜索结果 ============ -->
