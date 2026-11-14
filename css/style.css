@@ -178,6 +178,8 @@ body{
 .work-item .wi-name{font-weight:700;color:var(--navy);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .work-item .wi-meta{font-size:12px;color:var(--muted);margin-top:2px}
 .work-item .wi-actions{display:flex;gap:6px;flex-shrink:0}
+.work-item .btn-ignore{color:var(--muted);border-color:transparent;background:transparent}
+.work-item .btn-ignore:hover{color:var(--danger);border-color:var(--border);background:#fff}
 .progress{height:6px;background:#e6ecf3;border-radius:3px;overflow:hidden;margin-top:6px}
 .progress i{display:block;height:100%;background:linear-gradient(90deg,#3b6ea5,#2e7d4f)}
 
@@ -236,6 +238,33 @@ body.focus-open{overflow:hidden}
 .drops-src{color:var(--muted);font-size:12.5px}
 .drops-move{display:flex;gap:4px}
 .drops-move .btn{padding:2px 9px}
+
+/* ---------- 赛事权重底色 ---------- */
+.tw-badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:800;color:#fff;vertical-align:middle}
+.tw-badge-wc{background:#8a6d1f}
+.tw-badge-world{background:#1e3a5f}
+.tw-badge-league{background:#2e7d4f}
+.tw-badge-secondary{background:#6b7787}
+tr.tw-wc td{background:#fff4d6 !important}
+tr.tw-world td{background:#e8f1fd !important}
+tr.tw-league td{background:#eaf6ea !important}
+tr.tw-secondary td{background:#f4f5f7 !important}
+tr.tw-wc:hover td{background:#ffedb4 !important}
+tr.tw-world:hover td{background:#dbe9fb !important}
+tr.tw-league:hover td{background:#def0de !important}
+tr.tw-secondary:hover td{background:#eceef1 !important}
+.card.tw-wc{background:#fff4d6;border-color:#e6cf8b}
+.card.tw-world{background:#e8f1fd;border-color:#c3d8f2}
+.card.tw-league{background:#eaf6ea;border-color:#c2e0c5}
+.card.tw-secondary{background:#f7f8fa;border-color:#dde3ea}
+.tw-band{height:6px;border-radius:4px;margin-bottom:12px}
+.tw-band.tw-wc{background:linear-gradient(90deg,#c9a227,#e6cf8b)}
+.tw-band.tw-world{background:linear-gradient(90deg,#1e3a5f,#3b6ea5)}
+.tw-band.tw-league{background:linear-gradient(90deg,#2e7d4f,#6aa84f)}
+.tw-band.tw-secondary{background:linear-gradient(90deg,#8a95a5,#c3ccd8)}
+.h2h-win{color:#1f6b45;font-weight:800}
+.h2h-loss{color:#b3382c}
+.h2h-score b{font-variant-numeric:tabular-nums}
 
 /* ---------- 队伍对比 ---------- */
 .compare-pickers{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px;align-items:flex-start}

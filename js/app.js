@@ -11,6 +11,27 @@ const STORAGE_KEY = 'thegame-data-v1';
 const CATEGORY_LABELS = { hupl: 'HUPL席位队伍', secondary: '次级队伍', external: '外赛区队伍' };
 const REGIONS = { HO: '红狗国', CH: '橙狗', LV: '绿狗', OP: '剩余赛区', GP: '粉金赛区' };
 const TYPE_LABELS = { secondary: '次级赛事', hupl: 'HUPL', international: '国际赛事' };
+/* 赛事权重：WC > 世界赛 > 联赛 > 次级；同时决定列表/记录里的底色 */
+const WEIGHT_LABELS = { wc: 'WC', world: '世界赛', league: '联赛', secondary: '次级' };
+const WEIGHT_ORDER = ['wc', 'world', 'league', 'secondary'];
+const CAT_KEYS = ['league', 'secondary', 'world'];
+const CAT_LABELS = { league: '联赛', secondary: '次级', world: '世界赛' };
+function tournamentWeight(t){
+  if(!t) return 'secondary';
+  if(t.type === 'international') return t.subtype === 'worldchampionship' ? 'wc' : 'world';
+  if(t.type === 'hupl') return 'league';
+  return 'secondary';
+}
+/* 统计口径里 WC 并入「世界赛」 */
+function tournamentCat(t){
+  const w = tournamentWeight(t);
+  return w === 'wc' ? 'world' : w;
+}
+function twClass(t){ return 'tw tw-' + tournamentWeight(t); }
+function twBadge(t){
+  const w = tournamentWeight(t);
+  return '<span class="tw-badge tw-badge-' + w + '">' + WEIGHT_LABELS[w] + '</span>';
+}
 const FORMAT_LABELS = { group: '小组赛', swiss: '瑞士轮', single: '单败赛制', double: '双败赛制', 'tiered-double': '分级双败', wc: 'WC赛制' };
 const WC_SOURCES = ['小世界赛冠军', '世界积分直邀', '地区积分第一', 'world2晋级'];
 const REGION_COLORS = { HO: '#a83232', CH: '#e07b3e', LV: '#2e7d4f', OP: '#1e3a5f', GP: '#d85c8e' };
@@ -1236,6 +1257,26 @@ function resumeLastEntry(){
   openTournament(t.id);
   openFocusMode(le.stageId);
 }
+function todoIgnoredSet(){
+  if(!state.meta || typeof state.meta !== 'object') state.meta = {};
+  if(!Array.isArray(state.meta.todoIgnored)) state.meta.todoIgnored = [];
+  return new Set(state.meta.todoIgnored);
+}
+function ignoreTodo(tid){
+  const set = todoIgnoredSet();
+  set.add(tid);
+  state.meta.todoIgnored = Array.from(set);
+  saveState();
+  renderDashboard();
+  toast('已忽略，不再出现在待办里', 'ok');
+}
+function restoreTodoIgnored(){
+  if(!state.meta) return;
+  state.meta.todoIgnored = [];
+  saveState();
+  renderDashboard();
+  toast('已恢复全部被忽略的赛事', 'ok');
+}
 function quickFocus(tid){
   openTournament(tid);
   openFocusMode();
@@ -1272,10 +1313,12 @@ function renderDashboard(){
       '</div>';
   }
 
-  // 待办：没录完 / 没阶段的赛事
+  // 待办：没录完 / 没阶段的赛事（可忽略）
+  const ignored = todoIgnoredSet();
   const todo = state.tournaments.map(x => ({ t: x, p: tournamentProgress(x) }))
-    .filter(x => !x.t.locked && (x.p.pending > 0 || x.p.noStage))
+    .filter(x => !x.t.locked && !ignored.has(x.t.id) && (x.p.pending > 0 || x.p.noStage))
     .sort((a, b) => (b.p.pending - a.p.pending) || ((b.t.createdAt || 0) - (a.t.createdAt || 0)));
+  const ignoredCount = state.meta.todoIgnored.filter(id => getTournament(id)).length;
   html += '<div class="section"><h2>待办 · 还没录完的赛事 <span class="muted" style="font-weight:400;font-size:13px">（' + todo.length + '）</span></h2>';
   if(!todo.length){
     html += '<div class="empty" style="padding:18px">全部录完了 🎉</div>';
@@ -1293,10 +1336,15 @@ function renderDashboard(){
           ? '<button class="btn btn-sm" onclick="openTournament(\'' + tt.id + '\')">去建阶段</button>'
           : '<button class="btn btn-sm btn-primary" onclick="quickFocus(\'' + tt.id + '\')">继续录入</button>') +
         '<button class="btn btn-sm" onclick="openTournament(\'' + tt.id + '\')">打开</button>' +
+        '<button class="btn btn-sm btn-ignore" onclick="ignoreTodo(\'' + tt.id + '\')" title="从待办里隐藏">忽略</button>' +
         '</div></div>';
     });
     html += '</div>';
     if(todo.length > 6) html += '<p class="muted" style="margin-top:8px"><a class="clickable" onclick="go(\'tournaments\')">查看全部 ' + todo.length + ' 个 →</a></p>';
+  }
+  if(ignoredCount){
+    html += '<p class="muted" style="margin-top:8px;font-size:12.5px">已忽略 ' + ignoredCount + ' 个赛事 · ' +
+      '<a class="clickable" onclick="restoreTodoIgnored()">恢复显示</a></p>';
   }
   html += '</div>';
 
@@ -1348,8 +1396,8 @@ function tournamentCard(t, opts){
       '<span class="fmt-arrow' + (opts.idx === opts.total - 1 ? ' dis' : '') + '" onclick="event.stopPropagation();moveTournamentInSeason(\'' + t.id + '\',1)">▼</span>' +
       '</span>';
   }
-  return '<div class="card" onclick="openTournament(\'' + t.id + '\')">' +
-    '<div class="card-head"><h3>' + esc(t.name) + '</h3>' + order + '</div>' +
+  return '<div class="card ' + twClass(t) + '" onclick="openTournament(\'' + t.id + '\')">' +
+    '<div class="card-head"><h3>' + twBadge(t) + esc(t.name) + '</h3>' + order + '</div>' +
     '<div class="meta">' + (t.seasonId ? esc((getSeason(t.seasonId)||{}).name || '') : '未归属赛年') + (t.date ? ' · ' + esc(t.date) : '') + '</div>' +
     '<div class="tags">' + tags.join('') + '</div></div>';
 }
@@ -1805,8 +1853,8 @@ function tournamentTableHtml(list){
     '<th>四强队伍</th>' + tournamentSortTh('队伍数','teams') +
     '<th style="width:70px">操作</th></tr></thead><tbody>';
   list.forEach(t => {
-    html += '<tr>' +
-      '<td><a class="clickable" onclick="openTournament(\'' + t.id + '\')">' + esc(t.name) + '</a></td>' +
+    html += '<tr class="' + twClass(t) + '">' +
+      '<td>' + twBadge(t) + '<a class="clickable" onclick="openTournament(\'' + t.id + '\')">' + esc(t.name) + '</a></td>' +
       '<td>' + typeBadge(t.type) + '</td>' +
       '<td>' + esc(subtypeLabel(t.subtype)) + '</td>' +
       '<td>' + (t.seasonId ? '<a class="clickable" onclick="openSeason(\'' + t.seasonId + '\')">' + esc((getSeason(t.seasonId)||{}).name || '') + '</a>' : '—') + '</td>' +
@@ -2046,12 +2094,13 @@ function renderTournamentDetail(){
   if(!t.type || !SUBTYPES[t.type]) t.type = 'secondary';
   $('tournament-title').textContent = t.name;
 
-  let meta = '';
+  let meta = '<div class="tw-band ' + twClass(t) + '"></div>';
   if(t.locked){
     meta += '<div class="lock-banner">🔒 这个赛事已锁定，只能查看不能修改。要改先点右上角「🔓 已锁定」。</div>';
   }
   meta += '<div class="table-wrap"><table class="plain"><tbody>';
   meta += '<tr><th style="width:110px">名称</th><td><input class="cell-input txt" value="' + esc(t.name) + '" onchange="updateTournamentField(\'name\',this.value)"></td></tr>';
+  meta += '<tr><th>级别</th><td>' + twBadge(t) + ' <span class="muted">' + esc(WEIGHT_LABELS[tournamentWeight(t)]) + '</span></td></tr>';
   meta += '<tr><th>分类</th><td>' + typeBadge(t.type) + ' <span class="badge badge-format">' + esc(subtypeLabel(t.subtype)) + '</span>' +
     ' <select class="cell-input" style="width:auto" onchange="updateTournamentField(\'subtype\',this.value)">' +
     SUBTYPES[t.type].map(x => '<option value="' + x[0] + '"' + (t.subtype === x[0] ? ' selected' : '') + '>' + esc(x[1]) + '</option>').join('') + '</select></td></tr>';
@@ -3648,7 +3697,7 @@ function renderTeamHistory(c){
       teamHistoryTh('日期','date') + (hasRel ? '<th>队名</th>' : '') + teamHistoryTh('最终名次','rank') +
       '</tr></thead><tbody>';
     hist.forEach(h => {
-      html += '<tr><td><a class="clickable" onclick="openTournament(\'' + h.t.id + '\')">' + esc(h.t.name) + '</a></td>' +
+      html += '<tr class="' + twClass(h.t) + '"><td>' + twBadge(h.t) + '<a class="clickable" onclick="openTournament(\'' + h.t.id + '\')">' + esc(h.t.name) + '</a></td>' +
         '<td>' + typeBadge(h.t.type) + ' ' + esc(subtypeLabel(h.t.subtype)) + '</td>' +
         '<td>' + (h.t.seasonId ? esc((getSeason(h.t.seasonId)||{}).name || '') : '—') + '</td>' +
         '<td>' + esc(h.t.date || '—') + '</td>' +
@@ -3715,9 +3764,14 @@ function compareRankOf(t, group){
   const row = (t.finalStandings || []).find(r => group.has(r.clubId));
   return row ? row.rank : null;
 }
+function emptyCatStats(){
+  return { played: 0, wins: 0, losses: 0, draws: 0, sf: 0, sa: 0, diff: 0, winRate: 0, first: 0, second: 0, top4: 0, attended: 0 };
+}
 function teamCompareSummary(clubId){
   const group = compareGroupOf(clubId);
   const log = [];
+  const cats = {};
+  CAT_KEYS.forEach(k => { cats[k] = emptyCatStats(); });
   (state.tournaments || []).forEach(t => {
     (t.stages || []).forEach(s => (s.matches || []).forEach(m => {
       const aIn = group.has(m.teamAId), bIn = group.has(m.teamBId);
@@ -3730,33 +3784,54 @@ function teamCompareSummary(clubId){
       let win = null;
       if(w === 'draw') win = null;
       else if(w) win = ((meInA ? m.teamAId : m.teamBId) === w);
-      log.push({ t: t, s: s, m: m, opp: opp, gf: num(meInA ? m.scoreA : m.scoreB), ga: num(meInA ? m.scoreB : m.scoreA), win: win });
+      const cat = tournamentCat(t);
+      const gf = num(meInA ? m.scoreA : m.scoreB);
+      const ga = num(meInA ? m.scoreB : m.scoreA);
+      log.push({ t: t, s: s, m: m, opp: opp, gf: gf, ga: ga, win: win, cat: cat });
+      const c = cats[cat];
+      c.played++;
+      if(win === true) c.wins++;
+      else if(win === false) c.losses++;
+      else c.draws++;
+      c.sf += gf; c.sa += ga;
     }));
   });
   log.sort((x, y) => String(x.t.date || '').localeCompare(String(y.t.date || '')) || ((x.t.createdAt || 0) - (y.t.createdAt || 0)));
-  let wins = 0, losses = 0, draws = 0, sf = 0, sa = 0;
-  log.forEach(x => {
-    if(x.win === true) wins++;
-    else if(x.win === false) losses++;
-    else draws++;
-    sf += x.gf; sa += x.ga;
+  const totals = emptyCatStats();
+  CAT_KEYS.forEach(k => {
+    const c = cats[k];
+    c.diff = c.sf - c.sa;
+    c.winRate = c.played ? Math.round(c.wins / c.played * 100) : 0;
+    totals.played += c.played; totals.wins += c.wins; totals.losses += c.losses; totals.draws += c.draws;
+    totals.sf += c.sf; totals.sa += c.sa;
+    totals.first += c.first; totals.second += c.second; totals.top4 += c.top4;
+    totals.attended += c.attended;
   });
-  const honors = { first: 0, second: 0, top4: 0, titles: [] };
+  totals.diff = totals.sf - totals.sa;
+  totals.winRate = totals.played ? Math.round(totals.wins / totals.played * 100) : 0;
   const attended = [];
   (state.tournaments || []).forEach(t => {
     if(!(t.teamIds || []).some(id => group.has(id))) return;
     attended.push(t);
+    const cat = tournamentCat(t);
+    cats[cat].attended++;
     const rank = compareRankOf(t, group);
-    if(rank === 1){ honors.first++; honors.titles.push(t); }
-    if(rank === 2) honors.second++;
-    if(rank && rank <= 4) honors.top4++;
+    if(rank === 1) cats[cat].first++;
+    if(rank === 2) cats[cat].second++;
+    if(rank && rank <= 4) cats[cat].top4++;
   });
+  // 重算合计荣誉（attended 循环之后）
+  totals.first = cats.league.first + cats.secondary.first + cats.world.first;
+  totals.second = cats.league.second + cats.secondary.second + cats.world.second;
+  totals.top4 = cats.league.top4 + cats.secondary.top4 + cats.world.top4;
+  totals.attended = attended.length;
   return {
-    group: group, log: log, played: log.length,
-    wins: wins, losses: losses, draws: draws,
-    sf: sf, sa: sa, diff: sf - sa,
-    honors: honors, attended: attended,
-    winRate: log.length ? Math.round(wins / log.length * 100) : 0
+    group: group, log: log, cats: cats,
+    played: totals.played, wins: totals.wins, losses: totals.losses, draws: totals.draws,
+    sf: totals.sf, sa: totals.sa, diff: totals.diff,
+    honors: { first: totals.first, second: totals.second, top4: totals.top4 },
+    attended: attended,
+    winRate: totals.winRate
   };
 }
 function compareHeadToHead(sa, sb){
@@ -4038,16 +4113,29 @@ function renderCompare(){
   const names = ids.map(id => getClub(id).name);
   html += '<div class="section"><h2>总体对比</h2><div class="table-wrap"><table class="cmp-table"><thead><tr>' +
     '<th style="width:30%">指标</th>' + names.map(n => '<th>' + esc(n) + '</th>').join('') + '</tr></thead><tbody>';
-  html += cmpMetricRow('总场次', sums.map(s => s.played), -1);
-  html += cmpMetricRow('战绩（胜-负-平）', sums.map(s => s.wins + '-' + s.losses + '-' + s.draws), -1);
-  html += cmpMetricRow('胜率',
-    sums.map(s => '<div>' + s.winRate + '%</div><div class="cmp-bar"><i style="width:' + s.winRate + '%"></i></div>'),
-    cmpBestIndex(sums.map(s => s.winRate), 'max'));
-  html += cmpMetricRow('小局比分差', sums.map(s => cmpDiffText(s.diff)), cmpBestIndex(sums.map(s => s.diff), 'max'));
-  html += cmpMetricRow('近 10 场', sums.map(s => cmpFormHtml(s.log)), -1);
-  html += cmpMetricRow('冠军 / 亚军 / 四强',
-    sums.map(s => s.honors.first + ' / ' + s.honors.second + ' / ' + s.honors.top4),
-    cmpBestIndex(sums.map(s => s.honors.first * 100 + s.honors.second * 10 + s.honors.top4), 'max'));
+  CAT_KEYS.forEach(cat => {
+    const active = sums.some(s => s.cats[cat].played > 0 || s.cats[cat].attended > 0);
+    if(!active) return;
+    const label = CAT_LABELS[cat];
+    html += cmpMetricRow(label + '战绩',
+      sums.map(s => s.cats[cat].wins + '-' + s.cats[cat].losses + '-' + s.cats[cat].draws), -1);
+    html += cmpMetricRow(label + '胜率',
+      sums.map(s => {
+        const c = s.cats[cat];
+        return c.played
+          ? '<div>' + c.winRate + '%</div><div class="cmp-bar"><i style="width:' + c.winRate + '%"></i></div>'
+          : '<span class="muted">—</span>';
+      }),
+      cmpBestIndex(sums.map(s => s.cats[cat].played ? s.cats[cat].winRate : null), 'max'));
+    html += cmpMetricRow(label + '冠军 / 亚军 / 四强',
+      sums.map(s => {
+        const c = s.cats[cat];
+        return c.attended ? c.first + ' / ' + c.second + ' / ' + c.top4 : '<span class="muted">—</span>';
+      }),
+      cmpBestIndex(sums.map(s => s.cats[cat].attended
+        ? (s.cats[cat].first * 100 + s.cats[cat].second * 10 + s.cats[cat].top4)
+        : null), 'max'));
+  });
   html += cmpMetricRow('参赛赛事数', sums.map(s => s.attended.length), -1);
   html += cmpMetricRow('共同赛事名次占优', rankBest, cmpBestIndex(rankBest, 'max'));
   html += '</tbody></table></div></div>';
@@ -4064,13 +4152,18 @@ function renderCompare(){
       const bn = getClub(ids[p.j]).shortName || getClub(ids[p.j]).name;
       html += '<h3 class="cmp-sub">' + esc(an) + ' vs ' + esc(bn) + '：' + p.aw + ' : ' + p.bw +
         (p.dr ? '（' + p.dr + ' 平）' : '') + '</h3>';
-      html += '<div class="table-wrap"><table><thead><tr><th>日期</th><th>赛事</th><th>比分（' + esc(an) + ' 视角）</th><th>结果</th></tr></thead><tbody>';
+      html += '<div class="table-wrap"><table><thead><tr><th>日期</th><th>赛事</th><th>比分（左 vs 右）</th></tr></thead><tbody>';
       p.list.slice().reverse().forEach(x => {
-        const res = x.win === true ? '胜' : x.win === false ? '负' : '平';
-        const cls = x.win === true ? 'ok-text' : x.win === false ? 'warn-text' : 'muted';
-        html += '<tr><td>' + esc(x.t.date || '—') + '</td>' +
+        const m = x.m;
+        const w = matchWinner(m);
+        const aName = clubName(m.teamAId), bName = clubName(m.teamBId);
+        const aCls = w === m.teamAId ? 'h2h-win' : (w === m.teamBId ? 'h2h-loss' : '');
+        const bCls = w === m.teamBId ? 'h2h-win' : (w === m.teamAId ? 'h2h-loss' : '');
+        html += '<tr class="' + twClass(x.t) + '">' +
+          '<td>' + esc(x.t.date || '—') + '</td>' +
           '<td><a class="clickable" onclick="openTournament(\'' + x.t.id + '\')">' + esc(x.t.name) + '</a></td>' +
-          '<td><b>' + x.gf + ' : ' + x.ga + '</b></td><td class="' + cls + '">' + res + '</td></tr>';
+          '<td class="h2h-score"><span class="' + aCls + '">' + esc(aName) + '</span> <b>' +
+          esc(m.scoreA) + ' : ' + esc(m.scoreB) + '</b> <span class="' + bCls + '">' + esc(bName) + '</span></td></tr>';
       });
       html += '</tbody></table></div>';
     });
@@ -4111,7 +4204,8 @@ function renderCompare(){
     shared.slice(0, 12).forEach(x => {
       const valid = x.ranks.filter(r => r != null);
       const best = valid.length ? Math.min.apply(null, valid) : null;
-      html += '<tr><td><a class="clickable" onclick="openTournament(\'' + x.t.id + '\')">' + esc(x.t.name) + '</a></td>' +
+      html += '<tr class="' + twClass(x.t) + '"><td>' + twBadge(x.t) +
+        '<a class="clickable" onclick="openTournament(\'' + x.t.id + '\')">' + esc(x.t.name) + '</a></td>' +
         '<td>' + esc(x.t.date || '—') + '</td>' +
         x.ranks.map(r => '<td class="' + (r != null && r === best && valid.filter(v => v === best).length === 1 ? 'cmp-better' : '') + '">' +
           (r ? '#' + r : '—') + '</td>').join('') + '</tr>';
