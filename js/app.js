@@ -4166,6 +4166,15 @@ function compareSharedTournaments(sums, filter){
     .map(t => ({ t: t, ranks: sums.map(s => compareRankOf(t, s.group)) }))
     .sort((x, y) => String(y.t.date || '').localeCompare(String(x.t.date || '')) || ((y.t.createdAt || 0) - (x.t.createdAt || 0)));
 }
+/* 共同赛事名次：有排名 > 没排名（#3 胜 —）；都没排名或并列最佳时不算谁占优 */
+function sharedRankWinner(ranks){
+  const valid = [];
+  (ranks || []).forEach((r, i) => { if(r != null) valid.push({ r: r, i: i }); });
+  if(!valid.length) return -1;
+  const best = Math.min.apply(null, valid.map(x => x.r));
+  const winners = valid.filter(x => x.r === best);
+  return winners.length === 1 ? winners[0].i : -1;
+}
 function startCompare(a, b){
   compareState = { ids: [a, b].filter(Boolean) };
   go('compare');
@@ -4380,11 +4389,8 @@ function renderCompare(){
   const shared = compareSharedTournaments(sums, compareFilter);
   const rankBest = sums.map(() => 0);
   shared.forEach(x => {
-    const ranks = x.ranks;
-    if(ranks.some(r => r == null)) return;
-    const best = Math.min.apply(null, ranks);
-    const winners = ranks.map((r, i) => r === best ? i : -1).filter(i => i >= 0);
-    if(winners.length === 1) rankBest[winners[0]]++;
+    const winner = sharedRankWinner(x.ranks);
+    if(winner >= 0) rankBest[winner]++;
   });
 
   let html = '';
@@ -4518,12 +4524,11 @@ function renderCompare(){
       ids.map(id => '<th>' + esc(getClub(id).shortName || getClub(id).name) + ' 名次</th>').join('') +
       '</tr></thead><tbody>';
     shared.slice(0, 12).forEach(x => {
-      const valid = x.ranks.filter(r => r != null);
-      const best = valid.length ? Math.min.apply(null, valid) : null;
+      const winner = sharedRankWinner(x.ranks);
       html += '<tr class="' + twClass(x.t) + '"><td>' + twBadge(x.t) +
         '<a class="clickable" onclick="openTournament(\'' + x.t.id + '\')">' + esc(x.t.name) + '</a></td>' +
         '<td>' + esc(x.t.date || '—') + '</td>' +
-        x.ranks.map(r => '<td class="' + (r != null && r === best && valid.filter(v => v === best).length === 1 ? 'cmp-better' : '') + '">' +
+        x.ranks.map((r, i) => '<td class="' + (i === winner ? 'cmp-better' : '') + '">' +
           (r ? '#' + r : '—') + '</td>').join('') + '</tr>';
     });
     html += '</tbody></table></div>';
