@@ -72,9 +72,12 @@ let filters = { clubCategory: 'all', clubRegion: '', tournamentType: 'all', tour
 let teamPicker = null;       // { target, selected:Set }
 let tForm = null;            // 新建赛事临时表单 { formats:[], teams:Set }
 let quickFill = { stageId: '', queue: [] };  // 快捷填入：当前阶段与待填队伍队列
-let pointsSort = {};         // 积分表排序：'ctx:ownerId' -> 排序列栈（最近的在前）
+let pointsSort = {};
+let pointsSortDir = {};         // 积分表排序：'ctx:ownerId' -> 排序列栈（最近的在前）
 let teamHistorySort = [];    // 队伍历届成绩排序栈（最近的在前）
+let teamHistoryDir = {};     // 每个排序键的方向：asc / desc
 let tournamentSort = [];     // 赛事列表排序栈（最近的在前；首页与赛事页共用）
+let tournamentSortDir = {};  // 每个排序键的方向：asc / desc
 let confirmCallback = null;
 
 /* ---------------- 工具 ---------------- */
@@ -1357,15 +1360,19 @@ function renderDashboard(){
       html += '<div class="empty">该赛年尚未填写积分表。<a class="clickable" onclick="openSeason(\'' + latest.id + '\')">前往填写</a></div>';
     } else {
       const leader = totals[0];
+      const ranks = pointsRankMap(totals);
       html += '<div class="table-wrap"><table><thead><tr><th>排名</th><th>队伍</th><th>总积分</th></tr></thead><tbody>';
       totals.forEach((r, i) => {
-        html += '<tr><td>' + rankHtml(i+1) + '</td><td>' + teamSwatch(r.clubId, true) + '</td><td><b>' + r.total + '</b></td></tr>';
+        html += '<tr><td>' + rankHtml(ranks[r.clubId] || 0) + '</td><td>' + teamSwatch(r.clubId, true) + '</td><td><b>' + r.total + '</b></td></tr>';
       });
       html += '</tbody></table></div>';
       html += '<p class="muted" style="margin-top:8px">当前领跑：' + teamSwatch(leader.clubId, true) + ' · ' + leader.total + ' 分</p>';
     }
     html += '</div>';
   }
+
+  // 全部队伍年度排名
+  html += '<div class="section"><h2>HUPL 年度排名走势 · 全部队伍</h2><div id="home-trend"></div></div>';
 
   // 最近赛事
   const recent = state.tournaments.slice().sort((a,b) => (b.createdAt||0) - (a.createdAt||0)).slice(0, 5);
@@ -1378,6 +1385,95 @@ function renderDashboard(){
   html += '<p class="muted" style="margin-top:8px"><a class="clickable" onclick="go(\'tournaments\')">查看全部赛事 →</a></p>';
   html += '</div>';
   $('view-dashboard').innerHTML = html;
+  renderHomeTrendChart();
+}
+
+/* ---------------- 首页：全部队伍年度排名折线 ---------------- */
+let homeTrendFocus = null;
+function homeTrendColor(i){
+  const hue = Math.round((i * 137.508 + 12) % 360);
+  return 'hsl(' + hue + ',58%,44%)';
+}
+function homeTrendData(){
+  const seasons = (state.seasons || []).slice()
+    .sort((a, b) => (a.year || 0) - (b.year || 0) || String(a.name || '').localeCompare(String(b.name || ''), 'zh'));
+  const ids = [];
+  seasons.forEach(s => ((s.points && s.points.clubIds) || []).forEach(id => {
+    if(ids.indexOf(id) < 0) ids.push(id);
+  }));
+  const rows = ids.map((id, i) => ({
+    id: id, name: clubName(id), color: homeTrendColor(i),
+    series: seasons.map(s => {
+      const p = s.points;
+      if(!p || !(p.clubIds || []).includes(id)) return null;
+      const totals = computePointsTotals(p);
+      const idx = totals.findIndex(r => r.clubId === id);
+      if(idx < 0) return null;
+      return { rank: pointsRankMap(totals)[id], points: totals[idx].total };
+    })
+  }));
+  return { seasons: seasons, rows: rows };
+}
+function renderHomeTrendChart(){
+  const el = $('home-trend');
+  if(!el) return;
+  const data = homeTrendData();
+  const seasons = data.seasons, rows = data.rows;
+  if(!seasons.length || !rows.length){
+    el.innerHTML = '<div class="empty">暂无赛年积分表，填写 HUPL 赛年积分后这里会出现全部队伍的排名走势。</div>';
+    return;
+  }
+  let maxRank = 1;
+  rows.forEach(r => r.series.forEach(d => { if(d && d.rank > maxRank) maxRank = d.rank; }));
+  maxRank = Math.max(10, maxRank);
+  const W = Math.max(760, 160 + seasons.length * 150), H = 400;
+  const padL = 56, padR = 28, padT = 24, padB = 52;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const X = i => seasons.length === 1 ? padL + iw / 2 : padL + iw * i / (seasons.length - 1);
+  const Y = r => padT + ih * (r - 1) / Math.max(1, maxRank - 1);
+  let svg = '<svg class="trend-chart home-trend-svg" viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-width:' + W + 'px;height:auto;display:block">';
+  for(let r = 1; r <= maxRank; r++){
+    const y = Y(r);
+    svg += '<line x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + y.toFixed(1) + '" stroke="#e3eaf3" stroke-width="1"/>';
+    svg += '<text x="' + (padL - 12) + '" y="' + (y + 4).toFixed(1) + '" text-anchor="end" font-size="11.5" fill="#5b6b7c">' + r + '</text>';
+  }
+  seasons.forEach((s, i) => {
+    svg += '<text x="' + X(i).toFixed(1) + '" y="' + (H - 30) + '" text-anchor="middle" font-size="12" fill="#5b6b7c">' + esc(s.name) + '</text>';
+  });
+  rows.forEach(row => {
+    const focus = homeTrendFocus === row.id;
+    const dim = homeTrendFocus && !focus;
+    const opacity = dim ? 0.14 : (focus ? 1 : 0.6);
+    const width = focus ? 4 : 1.8;
+    for(let i = 0; i < row.series.length - 1; i++){
+      const a = row.series[i], b = row.series[i + 1];
+      if(!a || !b) continue;
+      const x1 = X(i).toFixed(1), y1 = Y(a.rank).toFixed(1), x2 = X(i + 1).toFixed(1), y2 = Y(b.rank).toFixed(1);
+      svg += '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '" stroke="' + row.color +
+        '" stroke-width="' + width + '" stroke-opacity="' + opacity + '" stroke-linecap="round"/>';
+      svg += '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '" stroke="transparent" stroke-width="12" ' +
+        'style="cursor:pointer" data-focus-id="' + row.id + '"><title>' + esc(row.name) + '</title></line>';
+    }
+    row.series.forEach((d, i) => {
+      if(!d) return;
+      svg += '<circle cx="' + X(i).toFixed(1) + '" cy="' + Y(d.rank).toFixed(1) + '" r="' + (focus ? 5 : 3.2) + '" fill="' + row.color +
+        '" stroke="#fff" stroke-width="1" opacity="' + (dim ? 0.18 : 1) + '"><title>' +
+        esc(row.name + ' · ' + seasons[i].name + '：第' + d.rank + '名 · ' + d.points + '分') + '</title></circle>';
+    });
+  });
+  svg += '</svg>';
+  const legend = '<div class="home-trend-legend">' + rows.map(r =>
+    '<span class="htl-item' + (homeTrendFocus === r.id ? ' on' : '') + '" data-focus-id="' + r.id + '">' +
+    '<i style="background:' + r.color + '"></i>' + esc(r.name) + '</span>').join('') + '</div>';
+  el.innerHTML = svg + legend +
+    '<div class="muted" style="margin-top:6px">纵轴为 HUPL 赛年积分榜排名（1 在上，越靠上越好）；点折线或图例可加粗该队伍，再点一次取消。</div>';
+  el.querySelectorAll('[data-focus-id]').forEach(node => {
+    node.addEventListener('click', () => focusHomeTrend(node.dataset.focusId));
+  });
+}
+function focusHomeTrend(id){
+  homeTrendFocus = (homeTrendFocus === id) ? null : id;
+  renderHomeTrendChart();
 }
 function stat(n, label){ return '<div class="stat"><div class="num">' + n + '</div><div class="lbl">' + label + '</div></div>'; }
 function rankHtml(r){
@@ -1437,13 +1533,13 @@ function renderClubs(){
     const extra = c.category === 'hupl'
       ? (c.seat === 'temporary' ? '临时席位' : '固定席位')
       : c.category === 'external'
-        ? '<a class="clickable" onclick="setClubRegion(\'' + (c.region || '') + '\')" title="只看这个赛区">' + esc(REGIONS[c.region] || c.region || '—') + '</a>'
+        ? '<a class="clickable region-link" onclick="setClubRegion(\'' + (c.region || '') + '\')" title="只看这个赛区">' + esc(REGIONS[c.region] || c.region || '—') + '</a>'
         : '—';
     html += '<tr>' +
       '<td>' + teamSwatch(c.id, true) + '</td>' +
       '<td><input class="cell-input txt" value="' + esc(c.shortName) + '" onchange="updateClubField(\'' + c.id + '\',\'shortName\',this.value)"></td>' +
       '<td>' + categoryBadge(c.category) + '</td>' +
-      '<td>' + esc(extra) + '</td>' +
+      '<td>' + extra + '</td>' +
       '<td><input class="cell-input txt" value="' + esc(c.note) + '" placeholder="—" onchange="updateClubField(\'' + c.id + '\',\'note\',this.value)"></td>' +
       '<td class="nowrap"><button class="btn btn-sm" onclick="openTeam(\'' + c.id + '\')">档案</button> ' +
       '<button class="btn btn-sm btn-danger-text" onclick="deleteClub(\'' + c.id + '\')">删</button></td>' +
@@ -1668,6 +1764,17 @@ function computePointsTotals(p){
     return { clubId: cid, total: total };
   }).sort((a,b) => (b.total - a.total) || (a.clubId < b.clubId ? -1 : 1));
 }
+/* 同分取最低名次：3、4 名同分都记第 4，8–12 名同为 0 分都记第 12 */
+function pointsRankMap(totals){
+  const map = {};
+  const list = totals || [];
+  list.forEach((r, i) => {
+    let j = i;
+    while(j + 1 < list.length && list[j + 1].total === r.total) j++;
+    map[r.clubId] = j + 1;
+  });
+  return map;
+}
 function pointsTableHtml(ctx, ownerId, p, title){
   const owner = ctx === 'season' ? getSeason(ownerId) : getTournament(ownerId);
   let html = '<h2>' + esc(title) + '</h2>';
@@ -1677,15 +1784,22 @@ function pointsTableHtml(ctx, ownerId, p, title){
   }
   const totals = computePointsTotals(p);
   const totalMap = {}; totals.forEach(r => totalMap[r.clubId] = r.total);
+  const rankMap = pointsRankMap(totals);
   const skey = ctx + ':' + ownerId;
   const keys = pointsSort[skey] || [];
-  const sortMark = k => { const i = keys.indexOf(k); return i < 0 ? '' : '<span class="sort-mark">' + (i + 1) + '</span>'; };
+  const sortMark = k => {
+    const i = keys.indexOf(k);
+    if(i < 0) return '';
+    const d = pointsSortDir[skey + '|' + k];
+    return '<span class="sort-mark">' + (i + 1) + '</span>' + (d === 'desc' ? ' ▼' : ' ▲');
+  };
   const rows = p.clubIds.slice();
   rows.sort((a,b) => {
     for(const k of keys){
       let r;
       if(k === 'team') r = clubName(a).localeCompare(clubName(b), 'zh');
-      else r = pointsSortValue(p, b, k, totalMap) - pointsSortValue(p, a, k, totalMap);
+      else r = pointsSortValue(p, a, k, totalMap) - pointsSortValue(p, b, k, totalMap);
+      if(r && pointsSortDir[skey + '|' + k] === 'desc') r = -r;
       if(r) return r;
     }
     return (totalMap[b] || 0) - (totalMap[a] || 0) || clubName(a).localeCompare(clubName(b), 'zh');
@@ -1700,7 +1814,7 @@ function pointsTableHtml(ctx, ownerId, p, title){
     '<th style="width:40px"></th></tr></thead><tbody>';
   rows.forEach(cid => {
     const total = totalMap[cid] || 0;
-    html += '<tr><td>' + rankHtml(totals.findIndex(r => r.clubId === cid) + 1) + '</td><td>' + teamSwatch(cid, true) + '</td>';
+    html += '<tr><td>' + rankHtml(rankMap[cid] || 0) + '</td><td>' + teamSwatch(cid, true) + '</td>';
     p.stations.forEach(st => {
       const v = (p.data && p.data[cid] && p.data[cid][st.id] != null) ? p.data[cid][st.id] : '';
       html += '<td><input class="cell-input num" type="number" value="' + esc(v) + '" onchange="updatePointsCell(\'' + ctx + '\',\'' + ownerId + '\',\'' + cid + '\',\'' + st.id + '\',this.value)"></td>';
@@ -1729,9 +1843,18 @@ function pointsSortValue(p, clubId, key, totalMap){
 }
 function togglePointsSort(ctx, ownerId, key){
   const skey = ctx + ':' + ownerId;
+  const dkey = skey + '|' + key;
   const arr = (pointsSort[skey] || []).slice();
   const i = arr.indexOf(key);
-  if(i >= 0) arr.splice(i, 1); else arr.unshift(key);
+  if(i < 0){
+    arr.unshift(key);
+    pointsSortDir[dkey] = 'asc';
+  } else if(pointsSortDir[dkey] !== 'desc'){
+    pointsSortDir[dkey] = 'desc';
+  } else {
+    arr.splice(i, 1);
+    delete pointsSortDir[dkey];
+  }
   pointsSort[skey] = arr;
   renderPointsFor(ctx, ownerId);
 }
@@ -1850,7 +1973,8 @@ function sortTournamentList(list){
   return list.slice().sort((a,b) => {
     for(const key of tournamentSort){
       const va = tournamentSortVal(a, key), vb = tournamentSortVal(b, key);
-      const r = (typeof va === 'number' && typeof vb === 'number') ? (va - vb) : String(va).localeCompare(String(vb), 'zh');
+      let r = (typeof va === 'number' && typeof vb === 'number') ? (va - vb) : String(va).localeCompare(String(vb), 'zh');
+      if(r && tournamentSortDir[key] === 'desc') r = -r;
       if(r) return r;
     }
     return 0;
@@ -1858,12 +1982,22 @@ function sortTournamentList(list){
 }
 function tournamentSortTh(label, key){
   const i = tournamentSort.indexOf(key);
-  return '<th class="sort-th" title="点击排序（可多选，后选为主）" onclick="toggleTournamentSort(\'' + key + '\')">' + label +
-    (i >= 0 ? '<span class="sort-mark">' + (i + 1) + '</span>' : '') + '</th>';
+  const dir = tournamentSortDir[key];
+  const arrow = dir === 'desc' ? ' ▼' : (dir === 'asc' ? ' ▲' : '');
+  return '<th class="sort-th" title="点一下正序，再点倒序，第三下取消" onclick="toggleTournamentSort(\'' + key + '\')">' + label +
+    (i >= 0 ? '<span class="sort-mark">' + (i + 1) + '</span>' : '') + arrow + '</th>';
 }
 function toggleTournamentSort(key){
   const i = tournamentSort.indexOf(key);
-  if(i >= 0) tournamentSort.splice(i, 1); else tournamentSort.unshift(key);
+  if(i < 0){
+    tournamentSort.unshift(key);
+    tournamentSortDir[key] = 'asc';
+  } else if(tournamentSortDir[key] !== 'desc'){
+    tournamentSortDir[key] = 'desc';
+  } else {
+    tournamentSort.splice(i, 1);
+    delete tournamentSortDir[key];
+  }
   if(view === 'dashboard') renderDashboard(); else renderTournamentList();
 }
 function tournamentTableHtml(list){
@@ -3610,13 +3744,20 @@ function renderTeamRankTrend(c){
     el.innerHTML = '<div class="empty">暂无赛年数据。创建赛年并填写 HUPL 赛年积分表后，这里会显示该队伍的年度排名走势。</div>';
     return;
   }
+  const group = new Set(relatedIdsOf(c));
   const data = seasons.map(s => {
     const p = s.points;
     if(!p || !(p.clubIds || []).length) return null;
     const totals = computePointsTotals(p);
-    const idx = totals.findIndex(r => r.clubId === c.id);
-    if(idx < 0) return null;
-    return { rank: idx + 1, points: totals[idx].total };
+    const rankMap = pointsRankMap(totals);
+    let best = null;
+    totals.forEach(r => {
+      if(!group.has(r.clubId)) return;
+      const rank = rankMap[r.clubId];
+      if(!best || rank < best.rank) best = { rank: rank, points: r.total };
+    });
+    if(!best) return null;
+    return { rank: best.rank, points: best.points };
   });
   const ranks = data.filter(Boolean).map(d => d.rank);
   const maxRank = Math.max(13, ranks.length ? Math.max.apply(null, ranks) : 1);
@@ -3788,7 +3929,11 @@ function renderTeamHistory(c){
     rank: (a,b) => ((a.rank == null ? 1e9 : a.rank) - (b.rank == null ? 1e9 : b.rank))
   };
   hist.sort((a,b) => {
-    for(const k of teamHistorySort){ const r = cmpFns[k](a,b); if(r) return r; }
+    for(const k of teamHistorySort){
+      let r = cmpFns[k](a,b);
+      if(r && teamHistoryDir[k] === 'desc') r = -r;
+      if(r) return r;
+    }
     return (b.t.createdAt || 0) - (a.t.createdAt || 0);
   });
   const hEl = $('team-history');
@@ -3813,19 +3958,29 @@ function renderTeamHistory(c){
 }
 function teamHistoryTh(label, key){
   const i = teamHistorySort.indexOf(key);
-  return '<th class="sort-th" title="点击排序（可多选，后选为主）" onclick="toggleTeamHistorySort(\'' + key + '\')">' + label +
-    (i >= 0 ? '<span class="sort-mark">' + (i + 1) + '</span>' : '') + '</th>';
+  const dir = teamHistoryDir[key];
+  const arrow = dir === 'desc' ? ' ▼' : (dir === 'asc' ? ' ▲' : '');
+  return '<th class="sort-th" title="点一下正序，再点倒序，第三下取消" onclick="toggleTeamHistorySort(\'' + key + '\')">' + label +
+    (i >= 0 ? '<span class="sort-mark">' + (i + 1) + '</span>' : '') + arrow + '</th>';
 }
 function toggleTeamHistorySort(key){
   const i = teamHistorySort.indexOf(key);
-  if(i >= 0) teamHistorySort.splice(i, 1); else teamHistorySort.unshift(key);
+  if(i < 0){
+    teamHistorySort.unshift(key);
+    teamHistoryDir[key] = 'asc';
+  } else if(teamHistoryDir[key] !== 'desc'){
+    teamHistoryDir[key] = 'desc';
+  } else {
+    teamHistorySort.splice(i, 1);
+    delete teamHistoryDir[key];
+  }
   renderTeamHistory(getClub(currentClubId));
 }
 function renderTeamH2h(c){
   const gset = new Set(relatedIdsOf(c));
   const h2h = {};
   state.tournaments.forEach(t => {
-    if(teamSeasonFilter && t.seasonId !== teamSeasonFilter) return;
+    if(!tournamentFilterPass(t, teamFilter)) return;
     (t.stages || []).forEach(s => (s.matches || []).forEach(m => {
       const aIn = gset.has(m.teamAId), bIn = gset.has(m.teamBId);
       if(!aIn && !bIn) return;
@@ -3937,6 +4092,38 @@ function teamCompareSummary(clubId, filter){
     honors: { first: totals.first, second: totals.second, top4: totals.top4 },
     attended: attended,
     winRate: totals.winRate
+  };
+}
+function teamSeasonPointsSummary(group, filter){
+  if(filter && filter.types.size && !filter.types.has('hupl')) return { seasons: 0 };
+  const rows = [];
+  (state.seasons || []).forEach(s => {
+    if(filter && filter.seasons.size && !filter.seasons.has(s.id)) return;
+    const p = s.points;
+    if(!p || !(p.clubIds || []).length) return;
+    const totals = computePointsTotals(p);
+    const rankMap = pointsRankMap(totals);
+    let best = null;
+    totals.forEach(r => {
+      if(!group.has(r.clubId)) return;
+      const rank = rankMap[r.clubId];
+      if(!best || rank < best.rank) best = { rank: rank, points: r.total };
+    });
+    if(!best) return;
+    rows.push({ rank: best.rank, points: best.points, totalAll: totals.reduce((n, r) => n + r.total, 0) });
+  });
+  const n = rows.length;
+  if(!n) return { seasons: 0 };
+  const first = rows.filter(r => r.rank === 1).length;
+  const second = rows.filter(r => r.rank === 2).length;
+  const top4 = rows.filter(r => r.rank <= 4).length;
+  const zero = rows.filter(r => r.points === 0).length;
+  const sumPoints = rows.reduce((a, r) => a + r.points, 0);
+  const sumAll = rows.reduce((a, r) => a + r.totalAll, 0);
+  return {
+    seasons: n, first: first, second: second, top4: top4, zero: zero,
+    top4Rate: Math.round(top4 / n * 100),
+    share: sumAll ? Math.round(sumPoints / sumAll * 1000) / 10 : 0
   };
 }
 function compareHeadToHead(sa, sb){
@@ -4242,9 +4429,32 @@ function renderCompare(){
       cmpBestIndex(sums.map(s => s.cats[cat].attended
         ? (s.cats[cat].first * 100 + s.cats[cat].second * 10 + s.cats[cat].top4)
         : null), 'max'));
+    html += cmpMetricRow(label + '四强率',
+      sums.map(s => {
+        const c = s.cats[cat];
+        return c.attended ? Math.round(c.top4 / c.attended * 100) + '%' : '<span class="muted">—</span>';
+      }),
+      cmpBestIndex(sums.map(s => s.cats[cat].attended
+        ? Math.round(s.cats[cat].top4 / s.cats[cat].attended * 100)
+        : null), 'max'));
   });
-  html += cmpMetricRow('参赛赛事数', sums.map(s => s.attended.length), -1);
+  html += cmpMetricRow('参加世界赛事数', sums.map(s => s.cats.world.attended), -1);
   html += cmpMetricRow('共同赛事名次占优', rankBest, cmpBestIndex(rankBest, 'max'));
+  const sp = sums.map(s => teamSeasonPointsSummary(s.group, compareFilter));
+  if(sp.some(x => x.seasons > 0)){
+    html += cmpMetricRow('赛年冠军 / 亚军 / 四强',
+      sp.map(x => x.seasons ? x.first + ' / ' + x.second + ' / ' + x.top4 : '<span class="muted">—</span>'),
+      cmpBestIndex(sp.map(x => x.seasons ? x.first * 100 + x.second * 10 + x.top4 : null), 'max'));
+    html += cmpMetricRow('赛年四强率',
+      sp.map(x => x.seasons ? x.top4Rate + '%' : '<span class="muted">—</span>'),
+      cmpBestIndex(sp.map(x => x.seasons ? x.top4Rate : null), 'max'));
+    html += cmpMetricRow('零分次数（差）',
+      sp.map(x => x.seasons ? x.zero : '<span class="muted">—</span>'),
+      cmpBestIndex(sp.map(x => x.seasons ? x.zero : null), 'min'));
+    html += cmpMetricRow('赛年积分占有',
+      sp.map(x => x.seasons ? x.share + '%' : '<span class="muted">—</span>'),
+      cmpBestIndex(sp.map(x => x.seasons ? x.share : null), 'max'));
+  }
   html += '</tbody></table></div></div>';
 
   // 相互交手
@@ -5519,6 +5729,7 @@ async function bulkOcrRecognize(){
    所有没有自带排序逻辑的表头都可以点：数字按数字比较，中文按拼音/中文排序。
 ------------------------------------------------ */
 let tableSortTimer = null;
+const sortInited = new WeakSet();
 function installTableSorting(){
   const root = $('app');
   if(!root) return;
@@ -5534,6 +5745,11 @@ function makeTablesSortable(root){
     if(!table.tHead || !table.tHead.rows.length) return;
     const ths = Array.from(table.tHead.rows[0].cells);
     if(ths.some(th => th.classList.contains('sort-th'))) return;   // 已有自定义排序
+    const tbody = table.tBodies[0];
+    if(tbody && !sortInited.has(table)){
+      Array.from(tbody.rows).forEach((r, i) => { r.__origIdx = i; });
+      sortInited.add(table);
+    }
     ths.forEach(th => {
       if(th.dataset.sortBound || th.colSpan > 1) return;
       th.dataset.sortBound = '1';
@@ -5564,7 +5780,16 @@ function sortTableByColumn(table, th){
   const ths = Array.from(table.tHead.rows[0].cells);
   const idx = ths.indexOf(th);
   if(idx < 0) return;
-  const dir = th.dataset.dir === 'asc' ? 'desc' : 'asc';
+  const current = th.dataset.dir;
+  if(current === 'desc'){
+    // 第三下：取消排序，回到渲染时的原始顺序
+    ths.forEach(x => x.removeAttribute('data-dir'));
+    Array.from(tbody.rows)
+      .sort((a, b) => Number(a.__origIdx || 0) - Number(b.__origIdx || 0))
+      .forEach(r => tbody.appendChild(r));
+    return;
+  }
+  const dir = current === 'asc' ? 'desc' : 'asc';
   ths.forEach(x => { if(x !== th) x.removeAttribute('data-dir'); });
   th.dataset.dir = dir;
   const rows = Array.from(tbody.rows);
