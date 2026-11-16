@@ -4118,12 +4118,11 @@ function teamSeasonPointsSummary(group, filter){
   const second = rows.filter(r => r.rank === 2).length;
   const top4 = rows.filter(r => r.rank <= 4).length;
   const zero = rows.filter(r => r.points === 0).length;
-  const sumPoints = rows.reduce((a, r) => a + r.points, 0);
-  const sumAll = rows.reduce((a, r) => a + r.totalAll, 0);
+  const avgRank = Math.round(rows.reduce((a, r) => a + r.rank, 0) / n * 10) / 10;
   return {
     seasons: n, first: first, second: second, top4: top4, zero: zero,
     top4Rate: Math.round(top4 / n * 100),
-    share: sumAll ? Math.round(sumPoints / sumAll * 1000) / 10 : 0
+    avgRank: avgRank
   };
 }
 function compareHeadToHead(sa, sb){
@@ -4408,7 +4407,7 @@ function renderCompare(){
   html += '<div class="section"><h2>总体对比</h2><div class="table-wrap"><table class="cmp-table"><thead><tr>' +
     '<th style="width:30%">指标</th>' + names.map(n => '<th>' + esc(n) + '</th>').join('') + '</tr></thead><tbody>';
   CAT_KEYS.forEach(cat => {
-    const active = sums.some(s => s.cats[cat].played > 0 || s.cats[cat].attended > 0);
+    const active = sums.every(s => s.cats[cat].played > 0 || s.cats[cat].attended > 0);
     if(!active) return;
     const label = CAT_LABELS[cat];
     html += cmpMetricRow(label + '战绩',
@@ -4441,19 +4440,19 @@ function renderCompare(){
   html += cmpMetricRow('参加世界赛事数', sums.map(s => s.cats.world.attended), -1);
   html += cmpMetricRow('共同赛事名次占优', rankBest, cmpBestIndex(rankBest, 'max'));
   const sp = sums.map(s => teamSeasonPointsSummary(s.group, compareFilter));
-  if(sp.some(x => x.seasons > 0)){
+  if(sp.every(x => x.seasons > 0)){
     html += cmpMetricRow('赛年冠军 / 亚军 / 四强',
-      sp.map(x => x.seasons ? x.first + ' / ' + x.second + ' / ' + x.top4 : '<span class="muted">—</span>'),
-      cmpBestIndex(sp.map(x => x.seasons ? x.first * 100 + x.second * 10 + x.top4 : null), 'max'));
+      sp.map(x => x.first + ' / ' + x.second + ' / ' + x.top4),
+      cmpBestIndex(sp.map(x => x.first * 100 + x.second * 10 + x.top4), 'max'));
     html += cmpMetricRow('赛年四强率',
-      sp.map(x => x.seasons ? x.top4Rate + '%' : '<span class="muted">—</span>'),
-      cmpBestIndex(sp.map(x => x.seasons ? x.top4Rate : null), 'max'));
+      sp.map(x => x.top4Rate + '%'),
+      cmpBestIndex(sp.map(x => x.top4Rate), 'max'));
     html += cmpMetricRow('零分次数（差）',
-      sp.map(x => x.seasons ? x.zero : '<span class="muted">—</span>'),
-      cmpBestIndex(sp.map(x => x.seasons ? x.zero : null), 'min'));
-    html += cmpMetricRow('赛年积分占有',
-      sp.map(x => x.seasons ? x.share + '%' : '<span class="muted">—</span>'),
-      cmpBestIndex(sp.map(x => x.seasons ? x.share : null), 'max'));
+      sp.map(x => x.zero),
+      cmpBestIndex(sp.map(x => x.zero), 'min'));
+    html += cmpMetricRow('赛年平均排名',
+      sp.map(x => x.avgRank.toFixed(1)),
+      cmpBestIndex(sp.map(x => x.avgRank), 'min'));
   }
   html += '</tbody></table></div></div>';
 
@@ -4465,23 +4464,22 @@ function renderCompare(){
   } else {
     pairs.forEach(p => {
       if(!p.list.length) return;
-      const an = getClub(ids[p.i]).shortName || getClub(ids[p.i]).name;
-      const bn = getClub(ids[p.j]).shortName || getClub(ids[p.j]).name;
+      const leftName = clubName(ids[p.i]), rightName = clubName(ids[p.j]);
+      const an = getClub(ids[p.i]).shortName || leftName;
+      const bn = getClub(ids[p.j]).shortName || rightName;
       html += '<h3 class="cmp-sub">' + esc(an) + ' vs ' + esc(bn) + '：' + p.aw + ' : ' + p.bw +
         (p.dr ? '（' + p.dr + ' 平）' : '') + '</h3>';
-      html += '<div class="table-wrap"><table><thead><tr><th>日期</th><th>赛事</th><th>队伍 A</th><th>比分</th><th>队伍 B</th></tr></thead><tbody>';
+      html += '<div class="table-wrap"><table><thead><tr><th>日期</th><th>赛事</th><th>' + esc(leftName) +
+        '</th><th>比分</th><th>' + esc(rightName) + '</th></tr></thead><tbody>';
       p.list.slice().reverse().forEach(x => {
-        const m = x.m;
-        const w = matchWinner(m);
-        const aName = clubName(m.teamAId), bName = clubName(m.teamBId);
-        const aCls = w === m.teamAId ? 'h2h-win' : (w === m.teamBId ? 'h2h-loss' : '');
-        const bCls = w === m.teamBId ? 'h2h-win' : (w === m.teamAId ? 'h2h-loss' : '');
+        const lCls = x.win === true ? 'h2h-win' : (x.win === false ? 'h2h-loss' : '');
+        const rCls = x.win === false ? 'h2h-win' : (x.win === true ? 'h2h-loss' : '');
         html += '<tr class="' + twClass(x.t) + '">' +
           '<td>' + esc(x.t.date || '—') + '</td>' +
           '<td><a class="clickable" onclick="openTournament(\'' + x.t.id + '\')">' + esc(x.t.name) + '</a></td>' +
-          '<td class="' + aCls + '">' + esc(aName) + '</td>' +
-          '<td class="h2h-score" style="text-align:center"><b>' + esc(m.scoreA) + ' : ' + esc(m.scoreB) + '</b></td>' +
-          '<td class="' + bCls + '">' + esc(bName) + '</td></tr>';
+          '<td class="' + lCls + '">' + esc(leftName) + '</td>' +
+          '<td class="h2h-score" style="text-align:center"><b>' + x.gf + ' : ' + x.ga + '</b></td>' +
+          '<td class="' + rCls + '">' + esc(rightName) + '</td></tr>';
       });
       html += '</tbody></table></div>';
     });
