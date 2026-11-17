@@ -227,6 +227,7 @@ function normalizeState(raw){
   s.clubs.forEach(c => {
     if(!c.id) c.id = uid('c');
     if(!Array.isArray(c.relatedIds)) c.relatedIds = [];
+    if(!Array.isArray(c.analysisNotes)) c.analysisNotes = [];
   });
   s.seasons.forEach(x => {
     if(!x.id) x.id = uid('s');
@@ -512,6 +513,33 @@ function seedMergeNow(){
   go(view);
   toast('内置数据已补齐：新增 ' + r.added + ' 项，补回 ' + r.restored + ' 条阶段/对局' +
     (dup ? '，合并重复队伍 ' + dup + ' 支' : ''));
+}
+/* 预置的球队分析文本框（世界前20 / 联赛前10），只灌一次 */
+function applyAnalysisNotes(){
+  const bundle = window.THEGAME_ANALYSIS_NOTES;
+  if(!bundle || typeof bundle !== 'object') return 0;
+  const version = 'analysis-1999-2003-v1';
+  if(state.meta && state.meta.analysisNotesVersion === version) return 0;
+  let added = 0;
+  (state.clubs || []).forEach(c => {
+    if(!Array.isArray(c.analysisNotes)) c.analysisNotes = [];
+    const seeds = bundle[c.name] || bundle[c.shortName];
+    if(!seeds) return;
+    seeds.forEach(n => {
+      if(c.analysisNotes.some(x => x && x.id === n.id)) return;
+      c.analysisNotes.push({
+        id: n.id,
+        title: n.title || '分析笔记',
+        text: n.text || '',
+        createdAt: Date.now()
+      });
+      added++;
+    });
+  });
+  if(!state.meta || typeof state.meta !== 'object') state.meta = {};
+  state.meta.analysisNotesVersion = version;
+  if(added) saveState();
+  return added;
 }
 function seedReplaceAll(){
   const b = getSeedBundle();
@@ -3697,11 +3725,72 @@ function renderTeam(){
   meta += '</tbody></table></div>';
   $('team-meta').innerHTML = meta;
 
+  renderTeamAnalysis(c);
   renderTeamRelated(c);
   renderTeamRankTrend(c);
   renderTeamSeasonFilter(c);
   renderTeamHistory(c);
   renderTeamH2h(c);
+}
+
+/* ---------------- 队伍详细分析（便签式文本框） ---------------- */
+let teamNoteSaveTimer = null;
+function renderTeamAnalysis(c){
+  const el = $('team-analysis');
+  if(!el) return;
+  const notes = Array.isArray(c.analysisNotes) ? c.analysisNotes : [];
+  let html = '<div class="analysis-grid">';
+  notes.forEach(n => {
+    html += '<div class="analysis-note">' +
+      '<div class="note-bar" ondblclick="deleteTeamNote(\'' + n.id + '\')" title="双击删除这个分析文本框">' +
+      '<span>📌 ' + esc(n.title || '分析笔记') + '</span><span class="note-del">双击删除</span></div>' +
+      '<textarea class="note-text" data-note-id="' + n.id + '" placeholder="写点什么…" ' +
+      'oninput="updateTeamNote(\'' + n.id + '\',this.value);autoGrowNote(this)" onblur="flushTeamNotes()">' + esc(n.text || '') + '</textarea>' +
+      '</div>';
+  });
+  html += '<div class="analysis-add-wrap"><button class="btn analysis-add" onclick="addTeamNote()">+ 添加文本框</button></div></div>';
+  el.innerHTML = html;
+  requestAnimationFrame(() => el.querySelectorAll('.note-text').forEach(autoGrowNote));
+}
+function autoGrowNote(el){
+  if(!el) return;
+  el.style.height = 'auto';
+  el.style.height = Math.max(170, el.scrollHeight + 4) + 'px';
+}
+function addTeamNote(){
+  const c = getClub(currentClubId); if(!c) return;
+  if(!Array.isArray(c.analysisNotes)) c.analysisNotes = [];
+  const n = { id: uid('note'), title: '分析笔记', text: '', createdAt: Date.now() };
+  c.analysisNotes.push(n);
+  saveState();
+  renderTeamAnalysis(c);
+  setTimeout(() => {
+    const ta = document.querySelector('#team-analysis textarea[data-note-id="' + n.id + '"]');
+    if(ta) ta.focus();
+  }, 0);
+}
+function updateTeamNote(id, text){
+  const c = getClub(currentClubId); if(!c) return;
+  const n = (c.analysisNotes || []).find(x => x && x.id === id);
+  if(!n) return;
+  n.text = text;
+  if(teamNoteSaveTimer) clearTimeout(teamNoteSaveTimer);
+  teamNoteSaveTimer = setTimeout(() => { teamNoteSaveTimer = null; saveState(); }, 500);
+}
+function flushTeamNotes(){
+  if(teamNoteSaveTimer){ clearTimeout(teamNoteSaveTimer); teamNoteSaveTimer = null; saveState(); }
+}
+function deleteTeamNote(id){
+  const c = getClub(currentClubId); if(!c) return;
+  const n = (c.analysisNotes || []).find(x => x && x.id === id);
+  if(!n) return;
+  confirmDialog('删除分析文本框',
+    '确定删除「' + esc(n.title || '分析笔记') + '」吗？<br><span class="muted">双击标题即删除，删除后不可恢复。</span>', () => {
+      c.analysisNotes = (c.analysisNotes || []).filter(x => x && x.id !== id);
+      saveState();
+      renderTeamAnalysis(c);
+      toast('已删除分析文本框', 'ok');
+    });
 }
 
 function relatedIdsOf(c){
@@ -5846,6 +5935,7 @@ async function init(){
 
   // 内置静态数据集：本地缺什么就补什么（本地有改动的地方不会被覆盖）
   try{ applySeedOnBoot(); }catch(e){ console.warn('内置数据补齐失败', e); }
+  try{ applyAnalysisNotes(); }catch(e){ console.warn('预置分析写入失败', e); }
 
   go('dashboard');
   installTableSorting();
